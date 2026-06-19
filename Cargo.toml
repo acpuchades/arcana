@@ -1,0 +1,14 @@
+[package]
+name = "arcana"
+version = "0.1.0"
+edition = "2024"
+description = "A library of incremental technical-analysis indicators, signals and strategies"
+license = "MIT"
+keywords = ["trading", "technical-analysis", "indicators", "finance", "incremental"]
+categories = ["finance", "mathematics"]
+
+[lib]
+name = "arcana"
+path = "src/lib.rs"
+
+[dependencies]
