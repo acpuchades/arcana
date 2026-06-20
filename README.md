@@ -44,6 +44,7 @@ use arcana::indicators::{Current, Ema};
 
 let mut signal = Current::close().crosses_above(Ema::new(Current::close(), 20));
 
+# let feed: Vec<Candle> = Vec::new();
 for candle in feed {
     if signal.update(candle) {
         // entry trigger fires on the bar the close crosses above EMA-20
@@ -51,19 +52,25 @@ for candle in feed {
 }
 ```
 
-Working on a plain price stream instead of candles? Use `Identity` as the source:
+Indicators name their source explicitly, so the standard definitions read the
+way you'd expect — RSI of the close, fed one `Candle` per bar:
 
 ```rust
 use arcana::prelude::*;
-use arcana::indicators::{Identity, Rsi};
+use arcana::indicators::{Current, Rsi};
 
-// "RSI(14) over 70" as a single Signal<Input = Real>.
-let mut overbought = Rsi::new(Identity::new(), 14).above(70.0);
+// "RSI(14) of the close, over 70" as a single Signal<Input = Candle>.
+let mut overbought = Rsi::new(Current::close(), 14).above(70.0);
 
-for price in closes {
-    if overbought.update(price) { /* ... */ }
+# let feed: Vec<Candle> = Vec::new();
+for candle in feed {
+    if overbought.update(candle) { /* ... */ }
 }
 ```
+
+Working on a bare `f64` price stream instead of candles? `Identity` is the leaf
+that passes raw values straight through, so the same indicator consumes `Real`
+directly — `Rsi::new(Identity::new(), 14)`.
 
 ## Composition
 
@@ -109,18 +116,23 @@ toggle).
 
 ## What's included
 
-- **Moving averages / smoothing:** `Sma`, `Ema`, `Rma` (Wilder/SMMA)
-- **Oscillators / trend / volatility:** `Rsi`, `Macd`, `Atr`, `Adx`,
-  `Bollinger`, `Donchian`, `Stochastic` / `StochRsi`, `StdDev`
+- **Moving averages / smoothing:** `Sma`, `Ema`, `Rma` (Wilder/SMMA), `Wma`,
+  `Hma` (Hull)
+- **Oscillators / momentum:** `Rsi`, `Macd`, `Stochastic` / `StochRsi`,
+  `WilliamsR`, `Cci`, `Roc`, `StdDev`
+- **Trend / volatility:** `Atr`, `Adx`, `Dmi` (+DI/−DI), `Aroon`, `Bollinger`,
+  `Donchian`, `Keltner`, `Sar` (Parabolic SAR)
+- **Volume:** `Obv`, `Vwap`, `Ad` (Chaikin A/D), `Mfi`
 - **Sources & transforms:** `Identity`, `Value`, `Current::*` candle accessors,
-  `TrueRange`; `Add`/`Sub`/`Mul`/`Div`, `Lag`/`Diff`/`Ratio`,
+  `TrueRange`; `Add`/`Sub`/`Mul`/`Div`, `Lag`/`Diff`/`Ratio`/`Roc`,
   `RollingMax`/`RollingMin`
 - **Signals:** `Gt`/`Lt`/`Ge`/`Le`/`Eq`/`Ne` comparisons, `and`/`or`/`xor`/`not`,
   `changed`, `crosses_above`/`crosses_below`
 
 Multi-line indicators expose their components as fields and a value struct:
-`Bollinger` → `upper`/`middle`/`lower`, `Donchian` → `upper`/`middle`/`lower`,
-`Macd` → `macd`/`signal`/`histogram`, `Adx` → `plus_di`/`minus_di`/`adx`.
+`Bollinger`/`Donchian`/`Keltner` → `upper`/`middle`/`lower`, `Macd` →
+`macd`/`signal`/`histogram`, `Adx` → `plus_di`/`minus_di`/`adx`, `Dmi` →
+`plus_di`/`minus_di`, `Aroon` → `up`/`down`/`oscillator`.
 
 Comparisons are tolerance-aware (default `1e-8`, overridable via
 `Gt::with_epsilon(..)`) so floating-point noise doesn't cause spurious flips.

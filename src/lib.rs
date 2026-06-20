@@ -38,6 +38,12 @@
 //! [`Value`]: crate::indicators::Value
 //! [`Identity`]: crate::indicators::Identity
 
+// Compile-test the code examples in README.md as doctests, without injecting
+// the README's prose into the rendered crate documentation.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 pub mod indicator;
 pub mod indicators;
 pub mod signal;

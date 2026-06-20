@@ -16,7 +16,7 @@ pub struct DmiValue {
 /// A bar indicator (consumes the full [`Candle`]). Up-moves and down-moves are
 /// reduced to `+DM` / `-DM`, each Wilder-smoothed alongside the true range; the
 /// directional indicators are then `100·smoothed_DM / smoothed_TR`. This is the
-/// directional core [`Adx`](super::Adx) builds on — [`Adx`] embeds a `Dmi` and
+/// directional core [`Adx`](super::Adx) builds on — `Adx` embeds a `Dmi` and
 /// smooths the spread of these two lines into the trend-strength index.
 ///
 /// The first bar only seeds the previous high/low/close, so `+DI` / `-DI` become
