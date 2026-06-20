@@ -1,1 +1,8 @@
 /target
+/tests/data/talib_expected.csv
+
+# TA-Lib fixture generator (Python) internals
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
