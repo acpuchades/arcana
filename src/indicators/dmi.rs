@@ -1,4 +1,5 @@
 use crate::indicator::Indicator;
+use crate::indicators::Component;
 use crate::indicators::smoothing::WilderState;
 use crate::types::{Candle, Real};
 
@@ -46,6 +47,21 @@ impl Dmi {
             plus_di: None,
             minus_di: None,
         }
+    }
+}
+
+/// Component accessors: each directional line as a standalone
+/// `Indicator<Output = Real>`, so e.g.
+/// `dmi.plus_di().crosses_above(dmi.minus_di())`.
+impl Dmi {
+    /// `+DI` as a standalone source.
+    pub fn plus_di(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.plus_di)
+    }
+
+    /// `-DI` as a standalone source.
+    pub fn minus_di(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.minus_di)
     }
 }
 

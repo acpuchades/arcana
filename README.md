@@ -117,6 +117,28 @@ just changed", i.e. `a.gt(b).and(a.gt(b).changed())`, which `crosses_above`
 builds for you. `changed()` is the single edge primitive (it fires on any
 toggle).
 
+Multi-output indicators (`Macd`, `Bollinger`, `Adx`, …) produce a small value
+struct, but each output also has a **component accessor** that projects that one
+field back into an ordinary `Indicator<Output = Real>` — so a single line of a
+multi-output indicator composes and compares exactly like any other source:
+
+```rust
+use arcana::prelude::*;
+use arcana::indicators::{Bollinger, Current, Macd};
+
+// MACD line crossing its signal line, as one composed Signal:
+let macd = Macd::new(Current::close(), 12, 26, 9);
+let _macd_cross = macd.line().crosses_above(macd.signal());
+
+// "close pierces the upper Bollinger band":
+let bands = Bollinger::new(Current::close(), 20, 2.0);
+let _breakout = Current::close().gt(bands.upper());
+```
+
+Each accessor clones its source, so the two operands above are independent,
+self-contained instances (the same clone-the-operands shape `crosses_above`
+already uses) — just feed each the same `Candle` per bar.
+
 ## Strategies
 
 The decision layer turns signals into trades. A **strategy** is *your own type*
@@ -201,7 +223,11 @@ scope for this crate; it belongs in a downstream project that implements `Wallet
 Multi-line indicators expose their components as fields and a value struct:
 `Bollinger`/`Donchian`/`Keltner` → `upper`/`middle`/`lower`, `Macd` →
 `macd`/`signal`/`histogram`, `Adx` → `plus_di`/`minus_di`/`adx`, `Dmi` →
-`plus_di`/`minus_di`, `Aroon` → `up`/`down`/`oscillator`.
+`plus_di`/`minus_di`, `Aroon` → `up`/`down`/`oscillator`. Each component also has
+a same-named **accessor** (`macd.line()`/`.signal()`/`.histogram()`,
+`bands.upper()`/`.middle()`/`.lower()`, `adx.adx()`, …) that returns it as a
+composable `Indicator<Output = Real>` — so any one line can feed the comparison
+and arithmetic builders above (see [Composition](#composition)).
 
 Comparisons are tolerance-aware (default `1e-8`, overridable via
 `Gt::with_epsilon(..)`) so floating-point noise doesn't cause spurious flips.
@@ -215,8 +241,9 @@ Runnable example programs live in [`examples/`](examples) — run any with
   handling the `Option` warm-up.
 - `candle_signal` — a compound entry rule (EMA crossover gated by an RSI filter)
   as one object, fed one `Candle` per bar.
-- `multi_output` — reading multi-line indicators two ways: the `BollingerValue`
-  struct and `Macd`'s per-component public fields.
+- `multi_output` — the components of multi-line indicators three ways: the
+  `BollingerValue` struct, `Macd`'s per-component public fields, and the
+  component accessors composed into signals (`macd.line().crosses_above(..)`).
 - `backtest` — a batch backtest over bundled monthly AAPL data: a `GoldenCross`
   strategy trading a `PaperWallet`, long/flat, versus a buy-and-hold benchmark.
 - `strategy` — a long/short, always-in-the-market reversal: one strategy type

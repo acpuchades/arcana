@@ -1,4 +1,5 @@
 use crate::indicator::Indicator;
+use crate::indicators::Component;
 use crate::indicators::smoothing::EmaState;
 use crate::types::Real;
 
@@ -48,6 +49,29 @@ impl<S> Macd<S> {
             signal: None,
             histogram: None,
         }
+    }
+}
+
+/// Component accessors: each yields one output line as a standalone
+/// `Indicator<Output = Real>`, so MACD's components compose and compare like any
+/// other source — e.g. `macd.line().crosses_above(macd.signal())`.
+impl<S> Macd<S>
+where
+    Macd<S>: Indicator<Output = MacdValue> + Clone,
+{
+    /// The MACD line (fast EMA − slow EMA) as a standalone source.
+    pub fn line(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.macd)
+    }
+
+    /// The signal line (EMA of the MACD line) as a standalone source.
+    pub fn signal(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.signal)
+    }
+
+    /// The histogram (MACD line − signal line) as a standalone source.
+    pub fn histogram(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.histogram)
     }
 }
 

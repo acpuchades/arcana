@@ -1,4 +1,5 @@
 use crate::indicator::Indicator;
+use crate::indicators::Component;
 use crate::indicators::stats::WindowStats;
 use crate::types::Real;
 
@@ -49,6 +50,29 @@ impl<S> Bollinger<S> {
             middle: None,
             lower: None,
         }
+    }
+}
+
+/// Component accessors: each band as a standalone `Indicator<Output = Real>`, so
+/// a band composes and compares like any other source — e.g.
+/// `Current::close().crosses_above(bands.upper())`.
+impl<S> Bollinger<S>
+where
+    Bollinger<S>: Indicator<Output = BollingerValue> + Clone,
+{
+    /// The upper band (`middle + k·stddev`) as a standalone source.
+    pub fn upper(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.upper)
+    }
+
+    /// The middle band (the moving average) as a standalone source.
+    pub fn middle(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.middle)
+    }
+
+    /// The lower band (`middle − k·stddev`) as a standalone source.
+    pub fn lower(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.lower)
     }
 }
 

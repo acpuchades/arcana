@@ -1,5 +1,5 @@
 use crate::indicator::Indicator;
-use crate::indicators::Dmi;
+use crate::indicators::{Component, Dmi};
 use crate::indicators::smoothing::WilderState;
 use crate::types::{Candle, Real};
 
@@ -49,6 +49,26 @@ impl Adx {
             minus_di: None,
             adx: None,
         }
+    }
+}
+
+/// Component accessors: each output as a standalone `Indicator<Output = Real>`,
+/// so e.g. a trend filter reads `adx.adx().above(25.0)` or
+/// `adx.plus_di().crosses_above(adx.minus_di())`.
+impl Adx {
+    /// `+DI` as a standalone source.
+    pub fn plus_di(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.plus_di)
+    }
+
+    /// `-DI` as a standalone source.
+    pub fn minus_di(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.minus_di)
+    }
+
+    /// `ADX` (trend strength) as a standalone source.
+    pub fn adx(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.adx)
     }
 }
 

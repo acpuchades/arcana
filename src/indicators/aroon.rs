@@ -1,4 +1,5 @@
 use crate::indicator::Indicator;
+use crate::indicators::Component;
 use crate::indicators::ops::{MaxOp, MinOp};
 use crate::indicators::stats::WindowExtreme;
 use crate::types::{Candle, Real};
@@ -54,6 +55,26 @@ impl Aroon {
 
     pub fn period(&self) -> usize {
         self.period
+    }
+}
+
+/// Component accessors: each output as a standalone `Indicator<Output = Real>`,
+/// so e.g. `aroon.up().crosses_above(aroon.down())` or
+/// `aroon.oscillator().above(0.0)`.
+impl Aroon {
+    /// Aroon Up as a standalone source.
+    pub fn up(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.up)
+    }
+
+    /// Aroon Down as a standalone source.
+    pub fn down(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.down)
+    }
+
+    /// The Aroon Oscillator (`up − down`) as a standalone source.
+    pub fn oscillator(&self) -> Component<Self> {
+        Component::new(self.clone(), |v| v.oscillator)
     }
 }
 

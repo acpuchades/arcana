@@ -24,6 +24,7 @@ mod atr;
 mod bollinger;
 mod candle;
 mod cci;
+mod component;
 mod dmi;
 mod donchian;
 mod ema;
@@ -56,6 +57,7 @@ pub use candle::{
     CandleField, Close, Current, Field, High, Low, Median, Open, Typical, Volume,
 };
 pub use cci::Cci;
+pub use component::Component;
 pub use dmi::{Dmi, DmiValue};
 pub use donchian::{Donchian, DonchianValue};
 pub use ema::Ema;

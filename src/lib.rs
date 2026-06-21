@@ -58,6 +58,7 @@ pub mod indicator;
 pub mod indicators;
 pub mod signal;
 pub mod signals;
+pub mod strategies;
 pub mod strategy;
 pub mod types;
 
