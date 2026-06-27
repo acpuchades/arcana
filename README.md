@@ -307,8 +307,9 @@ for o, h, l, c, v in bars:
 print(wallet.funds, wallet.position("AAPL"), wallet.orders())
 ```
 
-Build with `cd python && maturin develop --release`. See the
-[Python README](python/README.md) for the full API.
+Install with `pip install fugazi` (prebuilt wheels for Linux, macOS and
+Windows), or build from a checkout with `cd python && maturin develop --release`.
+See the [Python README](python/README.md) for the full API.
 
 ## License
 

@@ -15,11 +15,18 @@ Python bindings for [`fugazi`](..), a library of **incremental**,
 ## Install
 
 ```sh
+pip install fugazi
+```
+
+Then `import fugazi`. Prebuilt wheels are published for Linux, macOS
+(Intel + Apple Silicon) and Windows.
+
+To build from a checkout instead (for development):
+
+```sh
 pip install maturin
 maturin develop --release   # editable install into the active virtualenv
 ```
-
-Then `import fugazi`.
 
 ## Quick start
 
