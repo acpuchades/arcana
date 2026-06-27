@@ -41,17 +41,22 @@ impl Strategy for Reversal {
     type Input = Candle;
     type Symbol = &'static str;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<&'static str>) {
+    fn update(&mut self, candle: Candle) {
         // Advance both signals every bar (never short-circuit, or the skipped
         // one desyncs from the price stream).
-        let long = self.long.update(candle);
-        let short = self.short.update(candle);
+        self.long.update(candle);
+        self.short.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<&'static str>) {
         // No close: the position is always set to a direction, so the strategy
-        // is continuously in the market and reverses as the trend flips.
-        if long {
-            wallet.set(self.symbol, Side::Buy, Size::funds_frac(0.95), candle.close);
-        } else if short {
-            wallet.set(self.symbol, Side::Sell, Size::funds_frac(0.95), candle.close);
+        // is continuously in the market and reverses as the trend flips. Sizing
+        // to 95% of equity (which survives a reversal) keeps a small cash buffer
+        // while letting winners compound into the next position.
+        if self.long.value() {
+            let _ = wallet.set(self.symbol, Side::Buy, Size::value_frac(0.95));
+        } else if self.short.value() {
+            let _ = wallet.set(self.symbol, Side::Sell, Size::value_frac(0.95));
         }
     }
 
@@ -70,21 +75,22 @@ fn main() {
 
     for (date, candle) in &candles {
         let filled = wallet.orders().len();
-        strat.evaluate(*candle, &mut wallet);
+        wallet.update(SYMBOL, Reference(candle.close));
+        strat.update(*candle);
+        strat.trade(&mut wallet);
         for order in &wallet.orders()[filled..] {
             println!(
                 "{date}  {:<4} {:8.4} @ {:7.2}   position -> {:+.4}",
                 format!("{:?}", order.side).to_uppercase(),
                 order.quantity,
                 candle.close,
-                wallet.position(&SYMBOL)
+                wallet.position(&SYMBOL).amount
             );
         }
     }
 
-    let last = candles.last().unwrap().1;
-    let equity = wallet.equity(&last);
-    println!("\nfinal position:  {:+.4} units", wallet.position(&SYMBOL));
+    let equity = wallet.equity().0;
+    println!("\nfinal position:  {:+.4} units", wallet.position(&SYMBOL).amount);
     println!("final equity:    {:.2}", equity);
     println!("strategy growth: {:+.1}%", (equity / STARTING_FUNDS - 1.0) * 100.0);
 }

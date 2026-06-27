@@ -1,44 +1,58 @@
-//! The core [`Strategy`] trait, the [`Wallet`] it trades into, and the order
-//! vocabulary in between: [`Side`], [`Size`], [`Action`], [`Order`], and the
-//! [`Market`] pricing view.
+//! The core [`Strategy`] trait, the [`Wallet`] it trades into, and the
+//! vocabulary in between: [`Side`], [`Size`], [`Order`], the unit-tagged
+//! [`Reference`] / [`Quantity`] amounts, and [`WalletError`].
 
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 
 use crate::signals::DEFAULT_EPSILON;
-use crate::types::{Candle, Real};
+use crate::types::Real;
 
 /// An incremental trading strategy — the *decision* layer above indicators and
 /// signals.
 ///
 /// Like an [`Indicator`](crate::Indicator) and a [`Signal`](crate::Signal), a
-/// strategy is advanced one bar at a time. But where those layers are pure
-/// value-producers, a strategy *acts*: each bar it reads the input and opens,
-/// modifies, or closes positions on a [`Wallet`] handed to it. The wallet — not
-/// the strategy — owns the portfolio state (funds and positions), so one wallet
-/// can be inspected directly, shared across strategies, or swapped out, and the
-/// strategy itself stays a thin holder of its signals.
+/// strategy is advanced one bar at a time, but where those layers are pure
+/// value-producers a strategy *acts*. The work is split in two so the expensive,
+/// independent part is separated from the part that touches shared state:
 ///
-/// Because [`Wallet`] is a trait taken as `&mut dyn`, the same strategy runs
-/// against a [`PaperWallet`] in a backtest or a live broker wallet unchanged.
-/// A strategy emits nothing on a quiet bar simply by not touching the wallet.
+/// * [`update`](Strategy::update) advances the strategy's own indicators and
+///   signals. It borrows only `&mut self`, so the updates of many strategies are
+///   independent and can run in parallel.
+/// * [`trade`](Strategy::trade) reads that freshly-advanced state (`&self`) and
+///   opens, adjusts, or closes positions on the [`Wallet`] handed to it. It is
+///   *price-free*: the wallet is priced from outside (see [`Wallet::update`]).
+///   Trades against a shared wallet must run serially and in order, since
+///   funds/value sizing resolves against the wallet's running state.
+///
+/// A typical driver does, each bar: feed the wallet its prices, `update` every
+/// strategy, then `trade` each one. Because [`Wallet`] is taken as `&mut dyn`,
+/// the same strategy runs against a [`PaperWallet`] backtest or a live broker
+/// wallet unchanged.
 pub trait Strategy {
-    /// The per-bar input — commonly a [`Candle`], or a multi-asset snapshot.
+    /// The per-bar input — commonly a [`Candle`](crate::Candle), or a
+    /// multi-asset snapshot.
     type Input;
 
     /// The symbol type identifying instruments in the [`Wallet`].
     type Symbol;
 
-    /// Read the next bar and act on `wallet` — opening, modifying, or closing
-    /// positions as the strategy's logic dictates.
-    fn evaluate(&mut self, input: Self::Input, wallet: &mut dyn Wallet<Self::Symbol>);
+    /// Advance the strategy's indicators/signals on the next bar. No trading
+    /// happens here, so this can run independently of every other strategy.
+    fn update(&mut self, input: Self::Input);
 
-    /// Clear the strategy's own state (its signals/rules), returning it to its
-    /// freshly-constructed condition. Does not touch any wallet.
+    /// Act on `wallet` using the state from the most recent
+    /// [`update`](Strategy::update) — opening, adjusting, or closing positions.
+    fn trade(&self, wallet: &mut dyn Wallet<Self::Symbol>);
+
+    /// Clear the strategy's own state (its signals/indicators), returning it to
+    /// its freshly-constructed condition. Does not touch any wallet.
     fn reset(&mut self);
 }
 
-/// Which way an [`Order`] trades, and the direction an [`Action`] targets.
+/// Which way an [`Order`] trades, and the direction a [`set`](Wallet::set)
+/// targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     /// Increase the position (target/trade long).
@@ -57,21 +71,50 @@ impl Side {
     }
 }
 
-/// How an [`Action`] sizes the position it targets, resolved to a magnitude in
-/// instrument units.
+/// An amount denominated in the wallet's **reference** (quote) currency — the
+/// same units as [`funds`](Wallet::funds) and [`equity`](Wallet::equity), and
+/// the worth of one unit of a symbol ([`price`](Wallet::price)).
 ///
-/// Absolute sizing is a plain unit count; relative sizing is a fraction of
-/// either the available **funds** (converted to units at the current price) or
-/// the symbol's current **position**. Fractions and unit counts are taken as
-/// magnitudes (the sign comes from the trade's [`Side`]).
+/// A distinct type from [`Quantity`] so a reference amount and a count of some
+/// instrument's units can never be silently mixed.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Reference(pub Real);
+
+/// A signed quantity of one instrument's units (positive long, negative short),
+/// tagged with the `symbol` it counts.
+///
+/// Returned by [`position`](Wallet::position) and taken by
+/// [`set_position`](Wallet::set_position); distinct from a [`Reference`] amount
+/// so instrument units and quote currency never silently mix.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Quantity<Sym> {
+    /// The instrument these units count.
+    pub symbol: Sym,
+    /// The signed number of units (positive long, negative short).
+    pub amount: Real,
+}
+
+/// How a [`set`](Wallet::set) sizes the position it targets, resolved to a
+/// magnitude in instrument units.
+///
+/// Absolute sizing is a plain unit count; relative sizing is a fraction of the
+/// available **funds**, the total **equity** (funds plus all positions marked to
+/// market), or the symbol's current **position** — the first two converted to
+/// units at the current price. Fractions and unit counts are taken as magnitudes
+/// (the sign comes from the trade's [`Side`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Size {
     /// An absolute number of units.
     Units(Real),
     /// A fraction of available funds, converted to units at the current price:
-    /// `fraction * funds / price`.
+    /// `fraction * funds / price`. Sizes against cash on hand.
     FundsFraction(Real),
-    /// A fraction of the symbol's current position magnitude.
+    /// A fraction of total equity, converted to units at the current price:
+    /// `fraction * equity / price`. `value_frac(1.0)` is "all-in", and resizes
+    /// correctly on a reversal because equity (unlike cash) survives the flip.
+    ValueFraction(Real),
+    /// A fraction of the symbol's current position magnitude (adjust-only: from
+    /// a flat position it resolves to zero).
     PositionFraction(Real),
 }
 
@@ -84,19 +127,31 @@ impl Size {
     pub fn funds_frac(fraction: Real) -> Self {
         Size::FundsFraction(fraction)
     }
+    /// Sugar for [`Size::ValueFraction`].
+    pub fn value_frac(fraction: Real) -> Self {
+        Size::ValueFraction(fraction)
+    }
     /// Sugar for [`Size::PositionFraction`].
     pub fn position_frac(fraction: Real) -> Self {
         Size::PositionFraction(fraction)
     }
 
-    /// Resolve to a non-negative unit magnitude given the current `price`, the
-    /// symbol's current `position`, and the strategy's available `funds`.
-    pub fn resolve(&self, price: Real, position: Real, funds: Real) -> Real {
+    /// Resolve to a non-negative unit magnitude from the current `price`, the
+    /// symbol's `position`, the wallet's available `funds`, and its total
+    /// `equity`.
+    pub fn resolve(&self, price: Real, position: Real, funds: Real, equity: Real) -> Real {
         match self {
             Size::Units(units) => units.abs(),
             Size::FundsFraction(fraction) => {
                 if price > 0.0 {
                     (fraction.abs() * funds) / price
+                } else {
+                    0.0
+                }
+            }
+            Size::ValueFraction(fraction) => {
+                if price > 0.0 {
+                    (fraction.abs() * equity) / price
                 } else {
                     0.0
                 }
@@ -151,99 +206,129 @@ impl<Sym> Order<Sym> {
     }
 }
 
-/// A per-bar pricing view: the price at which a strategy values and transacts
-/// each `symbol` on the current bar.
-///
-/// A strategy's input must provide this so it can convert funds-relative
-/// [`Size`]s to units and mark assumed fills against its funds. A single
-/// instrument is the trivial case — a [`Candle`] prices any symbol at its close
-/// — while a multi-asset snapshot returns a different price per symbol.
-pub trait Market<Sym> {
-    /// The price for `symbol` on this bar.
-    fn price(&self, symbol: &Sym) -> Real;
+/// Why a [`Wallet`] movement could not be carried out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletError {
+    /// No price has been fed for the symbol (see [`Wallet::update`]), so the
+    /// movement can't be valued or booked.
+    UnknownPrice,
+    /// The fed price is not strictly positive, so it can't value or book a
+    /// movement.
+    InvalidPrice,
+    /// A net buy would drive cash below zero, and the wallet allows no margin.
+    /// (A short sale credits cash, so selling is always feasible.)
+    InsufficientFunds,
 }
 
-/// A single instrument: every symbol is priced at this bar's close.
-impl<Sym> Market<Sym> for Candle {
-    fn price(&self, _symbol: &Sym) -> Real {
-        self.close
+impl fmt::Display for WalletError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WalletError::UnknownPrice => f.write_str("no price has been fed for this symbol"),
+            WalletError::InvalidPrice => f.write_str("the fed price is not strictly positive"),
+            WalletError::InsufficientFunds => f.write_str("insufficient funds for this buy"),
+        }
     }
 }
 
-/// The portfolio interface a [`Strategy`] trades into: query `funds` and
-/// positions, and execute trades.
+impl std::error::Error for WalletError {}
+
+/// The portfolio interface a [`Strategy`] trades into: query funds, positions
+/// and prices, feed prices in, and move positions.
 ///
 /// `Wallet` is a trait so it is the single **seam** between pure arcana and a
 /// downstream execution system. arcana ships only the pure, in-memory
 /// [`PaperWallet`] (for backtests and dry runs); a downstream crate that imports
-/// arcana can implement `Wallet` with a type whose [`trade`](Wallet::trade)
-/// publishes a message onto an event bus / routes to a broker instead of booking
-/// in memory. That way all market-specific, side-effecting code stays out of
-/// arcana, behind this interface.
+/// arcana can implement `Wallet` with a type whose
+/// [`set_position`](Wallet::set_position) publishes a message onto an event bus /
+/// routes to a broker instead of booking in memory. All market-specific,
+/// side-effecting code stays out of arcana, behind this interface.
 ///
-/// Implementors provide just three primitives — [`funds`](Wallet::funds),
-/// [`position`](Wallet::position), and [`trade`](Wallet::trade) (execute a signed
-/// delta at a price). The ergonomic [`open`](Wallet::open) (additive),
-/// [`set`](Wallet::set) (absolute target), and [`close`](Wallet::close) are
-/// default methods built on those, so the additive/absolute/relative-[`Size`]
-/// logic lives here once and every implementation inherits it.
+/// The wallet carries no view of the market on its own: it must be fed each
+/// symbol's worth every tick through [`update`](Wallet::update) (arcana is
+/// agnostic to where those prices come from). With prices in hand it can value
+/// equity, size relative orders, and flag infeasible movements. The single
+/// execution primitive is [`set_position`](Wallet::set_position) (drive a symbol
+/// to an absolute target); [`set`](Wallet::set) (a [`Side`] + [`Size`]) and
+/// [`close`](Wallet::close) are default methods over it.
 pub trait Wallet<Sym> {
-    /// The available cash balance.
-    fn funds(&self) -> Real;
+    /// The available cash balance, in reference currency.
+    fn funds(&self) -> Reference;
 
-    /// The current position in `symbol` (signed: positive long, negative short,
-    /// zero flat).
-    fn position(&self, symbol: &Sym) -> Real;
+    /// The current signed position in `symbol`.
+    fn position(&self, symbol: &Sym) -> Quantity<Sym>;
 
-    /// The execution primitive: trade `delta` units of `symbol` (positive buys,
-    /// negative sells), assumed to fill at `price`. Implementors carry out the
-    /// trade — update a paper book, or publish to a bus / broker — and return the
-    /// resulting [`Order`], or `None` if `delta` is negligible.
-    fn trade(&mut self, symbol: Sym, delta: Real, price: Real) -> Option<Order<Sym>>;
+    /// The last price fed for `symbol`, or `None` if it has never been fed.
+    fn price(&self, symbol: &Sym) -> Option<Reference>;
 
-    /// **Additively** trade `side · size` of `symbol` at `price`, adding to
-    /// whatever is already held — open or scale a position. Re-firing
-    /// accumulates.
-    fn open(&mut self, symbol: Sym, side: Side, size: Size, price: Real) -> Option<Order<Sym>> {
-        let current = self.position(&symbol);
-        let magnitude = size.resolve(price, current, self.funds());
-        self.trade(symbol, side.sign() * magnitude, price)
+    /// Total equity: funds plus every position marked to its fed price.
+    fn equity(&self) -> Reference;
+
+    /// Feed `symbol`'s current worth. Call this — for every symbol to be traded
+    /// or held — each tick, before trading or reading
+    /// [`equity`](Wallet::equity).
+    fn update(&mut self, symbol: Sym, price: Reference);
+
+    /// The single execution primitive: drive `target.symbol` to `target.amount`
+    /// signed units at its fed price. Implementors carry out the movement — book
+    /// it on a paper wallet, or route it to a broker / bus — and return the
+    /// resulting [`Order`], `Ok(None)` if the position is already there, or a
+    /// [`WalletError`] if it can't be done.
+    fn set_position(&mut self, target: Quantity<Sym>) -> Result<Option<Order<Sym>>, WalletError>;
+
+    /// Target `side · size` of `symbol` (absolute). An opposite-side target
+    /// reverses the position; the same side adjusts toward it.
+    /// ([`close`](Wallet::close) is this with a flat target.)
+    fn set(
+        &mut self,
+        symbol: Sym,
+        side: Side,
+        size: Size,
+    ) -> Result<Option<Order<Sym>>, WalletError> {
+        let price = self.price(&symbol).ok_or(WalletError::UnknownPrice)?.0;
+        if price <= 0.0 {
+            return Err(WalletError::InvalidPrice);
+        }
+        let position = self.position(&symbol).amount;
+        let funds = self.funds().0;
+        let equity = self.equity().0;
+        let magnitude = size.resolve(price, position, funds, equity);
+        self.set_position(Quantity {
+            symbol,
+            amount: side.sign() * magnitude,
+        })
     }
 
-    /// **Set** the target position in `symbol` to `side · size` at `price`,
-    /// trading the difference. Re-firing the opposite side reverses; the same
-    /// side is idempotent. ([`close`](Wallet::close) is this with a flat target.)
-    fn set(&mut self, symbol: Sym, side: Side, size: Size, price: Real) -> Option<Order<Sym>> {
-        let current = self.position(&symbol);
-        let magnitude = size.resolve(price, current, self.funds());
-        self.trade(symbol, side.sign() * magnitude - current, price)
-    }
-
-    /// Flatten `symbol` at `price`.
-    fn close(&mut self, symbol: Sym, price: Real) -> Option<Order<Sym>> {
-        let current = self.position(&symbol);
-        self.trade(symbol, -current, price)
+    /// Flatten `symbol`.
+    fn close(&mut self, symbol: Sym) -> Result<Option<Order<Sym>>, WalletError> {
+        self.set_position(Quantity {
+            symbol,
+            amount: 0.0,
+        })
     }
 }
 
 /// The built-in **pure**, in-memory [`Wallet`]: a paper book of `funds`,
-/// per-symbol positions, and a blotter of executed [`Order`]s, with no IO.
+/// per-symbol positions, the prices fed to it, and a blotter of executed
+/// [`Order`]s, with no IO.
 ///
-/// [`trade`](Wallet::trade) assumes the fill at the passed price and books it —
-/// debiting a buy, crediting a sell. Use it for backtests and dry runs; a
-/// downstream `Wallet` impl handles live execution / bus publishing.
+/// [`set_position`](Wallet::set_position) assumes the fill at the symbol's last
+/// fed price and books it — debiting a buy, crediting a sell. Use it for
+/// backtests and dry runs; a downstream `Wallet` impl handles live execution /
+/// bus publishing.
 #[derive(Debug, Clone)]
 pub struct PaperWallet<Sym> {
     positions: HashMap<Sym, Real>,
+    prices: HashMap<Sym, Real>,
     funds: Real,
     blotter: Vec<Order<Sym>>,
 }
 
 impl<Sym> PaperWallet<Sym> {
-    /// A wallet seeded with `funds` of cash and no positions.
+    /// A wallet seeded with `funds` of cash, no positions and no prices.
     pub fn new(funds: Real) -> Self {
         Self {
             positions: HashMap::new(),
+            prices: HashMap::new(),
             funds,
             blotter: Vec::new(),
         }
@@ -259,50 +344,90 @@ impl<Sym> PaperWallet<Sym> {
         &self.blotter
     }
 
-    /// Drop the blotter history (positions and funds are untouched).
+    /// Drop the blotter history (positions, prices and funds are untouched).
     pub fn clear_blotter(&mut self) {
         self.blotter.clear();
     }
 }
 
 impl<Sym: Clone + Eq + Hash> PaperWallet<Sym> {
-    /// Iterate the held (symbol, signed-quantity) positions.
-    pub fn positions(&self) -> impl Iterator<Item = (&Sym, Real)> {
-        self.positions.iter().map(|(s, &q)| (s, q))
-    }
-
-    /// Mark-to-market equity: funds plus every position valued at `market`.
-    pub fn equity<M: Market<Sym>>(&self, market: &M) -> Real {
-        self.funds
-            + self
-                .positions
-                .iter()
-                .map(|(symbol, &qty)| qty * market.price(symbol))
-                .sum::<Real>()
+    /// Iterate the held positions.
+    pub fn positions(&self) -> impl Iterator<Item = Quantity<Sym>> + '_ {
+        self.positions.iter().map(|(symbol, &amount)| Quantity {
+            symbol: symbol.clone(),
+            amount,
+        })
     }
 }
 
 impl<Sym: Clone + Eq + Hash> Wallet<Sym> for PaperWallet<Sym> {
-    fn funds(&self) -> Real {
-        self.funds
+    fn funds(&self) -> Reference {
+        Reference(self.funds)
     }
 
-    fn position(&self, symbol: &Sym) -> Real {
-        self.positions.get(symbol).copied().unwrap_or(0.0)
+    fn position(&self, symbol: &Sym) -> Quantity<Sym> {
+        Quantity {
+            symbol: symbol.clone(),
+            amount: self.positions.get(symbol).copied().unwrap_or(0.0),
+        }
     }
 
-    fn trade(&mut self, symbol: Sym, delta: Real, price: Real) -> Option<Order<Sym>> {
-        let order = Order::from_delta(symbol.clone(), delta)?;
+    fn price(&self, symbol: &Sym) -> Option<Reference> {
+        self.prices.get(symbol).copied().map(Reference)
+    }
+
+    fn equity(&self) -> Reference {
+        let positions_value: Real = self
+            .positions
+            .iter()
+            .map(|(symbol, &amount)| amount * self.prices.get(symbol).copied().unwrap_or(0.0))
+            .sum();
+        Reference(self.funds + positions_value)
+    }
+
+    fn update(&mut self, symbol: Sym, price: Reference) {
+        self.prices.insert(symbol, price.0);
+    }
+
+    fn set_position(&mut self, target: Quantity<Sym>) -> Result<Option<Order<Sym>>, WalletError> {
+        let Quantity {
+            symbol,
+            amount: target,
+        } = target;
+        let current = self.positions.get(&symbol).copied().unwrap_or(0.0);
+        let delta = target - current;
+        if delta.abs() <= DEFAULT_EPSILON {
+            return Ok(None);
+        }
+        let price = self
+            .prices
+            .get(&symbol)
+            .copied()
+            .ok_or(WalletError::UnknownPrice)?;
+        if price <= 0.0 {
+            return Err(WalletError::InvalidPrice);
+        }
+        // No margin: a net buy can't drive cash below zero (tolerant of the
+        // rounding in an all-in `value_frac(1.0)`, whose cost equals funds).
+        if delta > 0.0 {
+            let cost = delta * price;
+            let tolerance = DEFAULT_EPSILON * self.funds.abs().max(1.0);
+            if cost - self.funds > tolerance {
+                return Err(WalletError::InsufficientFunds);
+            }
+        }
+        let order = Order::from_delta(symbol.clone(), delta)
+            .expect("delta exceeds DEFAULT_EPSILON, so the order is non-empty");
         // Pay for a buy, receive for a sell.
         self.funds -= order.signed_quantity() * price;
-        let new_position = self.position(&symbol) + delta;
+        let new_position = current + delta;
         if new_position.abs() <= DEFAULT_EPSILON {
             self.positions.remove(&symbol);
         } else {
             self.positions.insert(symbol, new_position);
         }
         self.blotter.push(order.clone());
-        Some(order)
+        Ok(Some(order))
     }
 }
 
@@ -312,55 +437,132 @@ mod tests {
     use crate::indicators::{Current, Sma};
     use crate::signal::Signal;
     use crate::signals::IndicatorExt;
+    use crate::types::Candle;
 
     fn bar(close: Real) -> Candle {
         Candle::new(close, close, close, close, 0.0)
     }
 
     #[test]
-    fn open_is_additive_and_books_funds() {
+    fn set_position_is_absolute_and_books_funds() {
         let mut w: PaperWallet<&str> = PaperWallet::new(1_000.0);
-        assert_eq!(w.open("X", Side::Buy, Size::units(3.0), 100.0), Some(Order::new("X", Side::Buy, 3.0)));
-        // Re-firing accumulates.
-        w.open("X", Side::Buy, Size::units(2.0), 100.0);
-        assert_eq!(w.position(&"X"), 5.0);
-        assert_eq!(w.funds(), 1_000.0 - 5.0 * 100.0);
+        w.update("X", Reference(100.0));
+        assert_eq!(
+            w.set_position(Quantity { symbol: "X", amount: 3.0 }),
+            Ok(Some(Order::new("X", Side::Buy, 3.0)))
+        );
+        // Setting a larger target buys the difference (scale in).
+        w.set_position(Quantity { symbol: "X", amount: 5.0 }).unwrap();
+        assert_eq!(w.position(&"X").amount, 5.0);
+        assert_eq!(w.funds().0, 1_000.0 - 5.0 * 100.0);
     }
 
     #[test]
-    fn set_is_absolute_and_reverses() {
+    fn set_targets_absolute_and_reverses() {
         let mut w: PaperWallet<&str> = PaperWallet::new(10_000.0);
-        w.set("X", Side::Buy, Size::units(4.0), 50.0);
-        assert!(w.set("X", Side::Buy, Size::units(4.0), 50.0).is_none()); // idempotent
+        w.update("X", Reference(50.0));
+        w.set("X", Side::Buy, Size::units(4.0)).unwrap();
+        assert!(w.set("X", Side::Buy, Size::units(4.0)).unwrap().is_none()); // idempotent
         // Opposite side reverses: +4 -> -4 is a sell of 8.
-        assert_eq!(w.set("X", Side::Sell, Size::units(4.0), 50.0), Some(Order::new("X", Side::Sell, 8.0)));
-        assert_eq!(w.position(&"X"), -4.0);
+        assert_eq!(
+            w.set("X", Side::Sell, Size::units(4.0)),
+            Ok(Some(Order::new("X", Side::Sell, 8.0)))
+        );
+        assert_eq!(w.position(&"X").amount, -4.0);
     }
 
     #[test]
     fn close_flattens() {
         let mut w: PaperWallet<&str> = PaperWallet::new(1_000.0);
-        w.open("X", Side::Buy, Size::units(10.0), 100.0);
-        assert_eq!(w.close("X", 110.0), Some(Order::new("X", Side::Sell, 10.0)));
+        w.update("X", Reference(100.0));
+        w.set("X", Side::Buy, Size::units(10.0)).unwrap();
+        w.update("X", Reference(110.0));
+        assert_eq!(w.close("X"), Ok(Some(Order::new("X", Side::Sell, 10.0))));
         assert!(w.is_flat());
-        assert_eq!(w.funds(), 1_100.0);
+        assert_eq!(w.funds().0, 1_100.0);
     }
 
     #[test]
     fn relative_sizing_resolves_against_funds_and_position() {
         let mut w: PaperWallet<&str> = PaperWallet::new(1_000.0);
+        w.update("X", Reference(25.0));
         // 10% of 1000 = 100 / price 25 = 4 units.
-        assert_eq!(w.open("X", Side::Buy, Size::funds_frac(0.1), 25.0), Some(Order::new("X", Side::Buy, 4.0)));
+        assert_eq!(
+            w.set("X", Side::Buy, Size::funds_frac(0.1)),
+            Ok(Some(Order::new("X", Side::Buy, 4.0)))
+        );
         // Set to 50% of the 4-unit position -> sell 2.
-        assert_eq!(w.set("X", Side::Buy, Size::position_frac(0.5), 25.0), Some(Order::new("X", Side::Sell, 2.0)));
-        assert_eq!(w.position(&"X"), 2.0);
+        assert_eq!(
+            w.set("X", Side::Buy, Size::position_frac(0.5)),
+            Ok(Some(Order::new("X", Side::Sell, 2.0)))
+        );
+        assert_eq!(w.position(&"X").amount, 2.0);
     }
 
     #[test]
-    fn equity_marks_positions_to_market() {
+    fn value_fraction_sizes_against_equity_and_flips_all_in() {
         let mut w: PaperWallet<&str> = PaperWallet::new(1_000.0);
-        w.open("X", Side::Buy, Size::units(4.0), 100.0); // funds 600, +4 units
-        assert_eq!(w.equity(&bar(120.0)), 600.0 + 4.0 * 120.0);
+        w.update("X", Reference(100.0));
+        // All-in long: 100% of equity (== funds when flat) / 100 = 10 units.
+        w.set("X", Side::Buy, Size::value_frac(1.0)).unwrap();
+        assert_eq!(w.position(&"X").amount, 10.0);
+        assert!(w.funds().0.abs() <= 1e-6);
+        // Equity is still 1000; flip all-in short in one call -> -10 units.
+        assert_eq!(
+            w.set("X", Side::Sell, Size::value_frac(1.0)),
+            Ok(Some(Order::new("X", Side::Sell, 20.0)))
+        );
+        assert_eq!(w.position(&"X").amount, -10.0);
+    }
+
+    #[test]
+    fn equity_marks_positions_to_fed_prices() {
+        let mut w: PaperWallet<&str> = PaperWallet::new(1_000.0);
+        w.update("X", Reference(100.0));
+        w.set("X", Side::Buy, Size::units(4.0)).unwrap(); // funds 600, +4 units
+        w.update("X", Reference(120.0));
+        assert_eq!(w.equity().0, 600.0 + 4.0 * 120.0);
+    }
+
+    #[test]
+    fn unknown_price_is_flagged() {
+        let mut w: PaperWallet<&str> = PaperWallet::new(1_000.0);
+        // "X" was never fed a price.
+        assert_eq!(
+            w.set("X", Side::Buy, Size::units(1.0)),
+            Err(WalletError::UnknownPrice)
+        );
+        assert_eq!(
+            w.set_position(Quantity { symbol: "X", amount: 1.0 }),
+            Err(WalletError::UnknownPrice)
+        );
+    }
+
+    #[test]
+    fn insufficient_funds_is_flagged_but_shorts_are_free() {
+        let mut w: PaperWallet<&str> = PaperWallet::new(100.0);
+        w.update("X", Reference(50.0));
+        // 3 units cost 150 > 100 funds, and there is no margin.
+        assert_eq!(
+            w.set("X", Side::Buy, Size::units(3.0)),
+            Err(WalletError::InsufficientFunds)
+        );
+        // A short sale credits cash, so selling is always feasible.
+        assert!(w.set("X", Side::Sell, Size::units(3.0)).is_ok());
+    }
+
+    #[test]
+    fn non_positive_price_is_flagged() {
+        let mut w: PaperWallet<&str> = PaperWallet::new(1_000.0);
+        w.update("X", Reference(0.0));
+        assert_eq!(
+            w.set("X", Side::Buy, Size::value_frac(1.0)),
+            Err(WalletError::InvalidPrice)
+        );
+        assert_eq!(
+            w.set_position(Quantity { symbol: "X", amount: 1.0 }),
+            Err(WalletError::InvalidPrice)
+        );
     }
 
     /// A self-contained strategy type: long the golden cross, flat the death
@@ -387,14 +589,17 @@ mod tests {
     impl Strategy for GoldenCross {
         type Input = Candle;
         type Symbol = &'static str;
-        fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<&'static str>) {
-            // Advance both signals every bar before branching.
-            let enter = self.enter.update(candle);
-            let exit = self.exit.update(candle);
-            if enter {
-                wallet.open(self.symbol, Side::Buy, Size::funds_frac(1.0), candle.close);
-            } else if exit {
-                wallet.close(self.symbol, candle.close);
+        fn update(&mut self, candle: Candle) {
+            // Advance both signals every bar.
+            self.enter.update(candle);
+            self.exit.update(candle);
+        }
+        fn trade(&self, wallet: &mut dyn Wallet<&'static str>) {
+            let flat = wallet.position(&self.symbol).amount.abs() <= DEFAULT_EPSILON;
+            if self.enter.value() && flat {
+                let _ = wallet.set(self.symbol, Side::Buy, Size::value_frac(1.0));
+            } else if self.exit.value() && !flat {
+                let _ = wallet.close(self.symbol);
             }
         }
         fn reset(&mut self) {
@@ -409,54 +614,48 @@ mod tests {
         let mut w: PaperWallet<&'static str> = PaperWallet::new(1_000.0);
         // Rising then falling closes to trigger a golden then death cross.
         for px in [10.0, 11.0, 12.0, 13.0, 14.0, 13.0, 11.0, 9.0, 8.0] {
-            strat.evaluate(bar(px), &mut w);
+            w.update("X", Reference(px));
+            strat.update(bar(px));
+            strat.trade(&mut w);
         }
         // It entered and later exited at least once; ends flat with funds back.
         assert!(!w.orders().is_empty());
         assert!(w.is_flat());
-        assert!(w.funds() > 0.0);
+        assert!(w.funds().0 > 0.0);
     }
 
-    /// A two-symbol snapshot, priced per symbol — the multi-asset case.
+    /// A two-symbol snapshot — the multi-asset case.
     #[derive(Clone, Copy)]
     struct Pair {
         a: Real,
         b: Real,
     }
-    impl Market<&'static str> for Pair {
-        fn price(&self, symbol: &&'static str) -> Real {
-            match *symbol {
-                "A" => self.a,
-                "B" => self.b,
-                _ => 0.0,
-            }
-        }
-    }
 
-    /// A market-neutral pairs leg-in: on the first bar, go long A and short B.
-    struct PairsTrade {
-        legged_in: bool,
-    }
+    /// A market-neutral pairs leg-in: while flat, go long A and short B. "Am I
+    /// in?" is read from the wallet, not stored on the strategy.
+    struct PairsTrade;
     impl Strategy for PairsTrade {
         type Input = Pair;
         type Symbol = &'static str;
-        fn evaluate(&mut self, snap: Pair, wallet: &mut dyn Wallet<&'static str>) {
-            if !self.legged_in {
-                wallet.open("A", Side::Buy, Size::units(3.0), snap.price(&"A"));
-                wallet.open("B", Side::Sell, Size::units(2.0), snap.price(&"B"));
-                self.legged_in = true;
+        fn update(&mut self, _snap: Pair) {}
+        fn trade(&self, wallet: &mut dyn Wallet<&'static str>) {
+            if wallet.position(&"A").amount == 0.0 && wallet.position(&"B").amount == 0.0 {
+                let _ = wallet.set_position(Quantity { symbol: "A", amount: 3.0 });
+                let _ = wallet.set_position(Quantity { symbol: "B", amount: -2.0 });
             }
         }
-        fn reset(&mut self) {
-            self.legged_in = false;
-        }
+        fn reset(&mut self) {}
     }
 
     #[test]
     fn multi_asset_strategy_acts_on_several_symbols_per_bar() {
-        let mut strat = PairsTrade { legged_in: false };
+        let mut strat = PairsTrade;
         let mut w: PaperWallet<&'static str> = PaperWallet::new(100_000.0);
-        strat.evaluate(Pair { a: 10.0, b: 20.0 }, &mut w);
+        let snap = Pair { a: 10.0, b: 20.0 };
+        w.update("A", Reference(snap.a));
+        w.update("B", Reference(snap.b));
+        strat.update(snap);
+        strat.trade(&mut w);
         assert_eq!(
             w.orders(),
             &[
@@ -464,9 +663,9 @@ mod tests {
                 Order::new("B", Side::Sell, 2.0),
             ]
         );
-        assert_eq!(w.position(&"A"), 3.0);
-        assert_eq!(w.position(&"B"), -2.0);
+        assert_eq!(w.position(&"A").amount, 3.0);
+        assert_eq!(w.position(&"B").amount, -2.0);
         // Bought 3@10 (-30), shorted 2@20 (+40): net +10 vs start.
-        assert_eq!(w.funds(), 100_000.0 + 10.0);
+        assert_eq!(w.funds().0, 100_000.0 + 10.0);
     }
 }

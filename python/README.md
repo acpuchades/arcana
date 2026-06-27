@@ -222,22 +222,30 @@ import arcana as ta
 
 wallet = ta.PaperWallet(10_000.0)          # seed with cash
 
-# open: additive (scale in) · set: absolute target (opposite side reverses) · close: flat
-wallet.open("AAPL", "buy", 10, 185.0)                    # 10 units @ 185 (a number = units)
-wallet.open("AAPL", "buy", ta.Size.funds_frac(0.25), 185.0)   # 25% of funds, sized at price
-wallet.set("AAPL", "buy", ta.Size.position_frac(0.5), 190.0)  # trim to 50% of the position
-wallet.close("AAPL", 190.0)                              # flatten
+wallet.update("AAPL", 185.0)               # feed the price each tick (before trading)
+
+# set: absolute target (opposite side reverses) · set_position: absolute units · close: flat
+wallet.set("AAPL", "buy", 10)                       # target 10 units (a number = units)
+wallet.set("AAPL", "buy", ta.Size.value_frac(0.25)) # target 25% of equity
+wallet.set("AAPL", "buy", ta.Size.position_frac(0.5))  # trim to 50% of the position
+wallet.set_position("AAPL", 4)                      # drive straight to 4 units
+wallet.close("AAPL")                                # flatten
 
 wallet.funds                 # cash balance
 wallet.position("AAPL")      # signed position (negative = short)
+wallet.price("AAPL")         # last fed price (or None)
 wallet.positions()           # {symbol: quantity}
-wallet.equity({"AAPL": 190.0})   # funds + positions marked at given prices
+wallet.equity()              # funds + positions marked at the fed prices
 wallet.orders()              # the blotter: list of Order(symbol, side, quantity)
 ```
 
-Sizes are an absolute number of units, or `ta.Size.funds_frac(f)` /
-`ta.Size.position_frac(f)`; sides are `"buy"`/`"sell"`. A full strategy loop —
-advancing **every** signal each bar before acting:
+The wallet is fed each symbol's price with `update(symbol, price)` and is
+otherwise market-agnostic. Sizes are an absolute number of units, or
+`ta.Size.funds_frac(f)` (cash) / `ta.Size.value_frac(f)` (equity; `1.0` is
+all-in) / `ta.Size.position_frac(f)`; sides are `"buy"`/`"sell"`. A movement that
+can't be carried out — no/zero price fed, or a buy beyond available funds —
+raises `ValueError`. A full strategy loop — price the wallet, advance **every**
+signal each bar, then act:
 
 ```python
 enter = ta.sma(ta.close(), 3).crosses_above(ta.sma(ta.close(), 10))
@@ -246,9 +254,10 @@ wallet = ta.PaperWallet(10_000.0)
 
 for o, h, l, c, v in bars:
     candle = ta.Candle(o, h, l, c, v)
+    wallet.update("AAPL", c)                          # price the wallet
     went_long, went_flat = enter.update(candle), exit_.update(candle)
     if went_long:
-        wallet.open("AAPL", "buy", ta.Size.funds_frac(1.0), c)
+        wallet.set("AAPL", "buy", ta.Size.value_frac(1.0))   # all-in long
     elif went_flat:
-        wallet.close("AAPL", c)
+        wallet.close("AAPL")
 ```

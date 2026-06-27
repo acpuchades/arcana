@@ -27,13 +27,16 @@ impl<Sym: Clone> Strategy for ObvTrend<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let bullish = self.bullish.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if bullish && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if !bullish && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.bullish.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.bullish.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if !self.bullish.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -67,14 +70,17 @@ impl<Sym: Clone> Strategy for VwapReversion<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -107,13 +113,16 @@ impl<Sym: Clone> Strategy for ChaikinAdTrend<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let bullish = self.bullish.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if bullish && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if !bullish && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.bullish.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.bullish.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if !self.bullish.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 

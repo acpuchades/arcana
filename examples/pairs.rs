@@ -1,12 +1,12 @@
 //! A multi-asset [`Strategy`]: two instruments traded independently from one
 //! [`Wallet`].
 //!
-//! The per-bar input is a *snapshot* of both symbols (`Snapshot`), which
-//! implements [`Market`] so the wallet can price each symbol. The strategy owns
-//! a separate SMA-crossover entry/exit pair per symbol, feeds each its own
-//! sub-candle, and acts on both symbols against a shared wallet — so a single
-//! `evaluate` can emit orders for several instruments (the multi-asset / pairs
-//! shape). Prices here are synthetic so the example is self-contained.
+//! The per-bar input is a *snapshot* of both symbols (`Snapshot`). The driver
+//! feeds the wallet each symbol's price every bar; the strategy owns a separate
+//! SMA-crossover entry/exit pair per symbol, feeds each its own sub-candle, and
+//! acts on both symbols against a shared wallet — so a single `trade` can emit
+//! orders for several instruments (the multi-asset / pairs shape). Prices here
+//! are synthetic so the example is self-contained.
 //!
 //! Run with: `cargo run --example pairs`
 
@@ -20,10 +20,10 @@ struct Snapshot {
     b: Candle,
 }
 
-/// Price each symbol off the snapshot, so `wallet.*` calls can value fills.
-impl Market<&'static str> for Snapshot {
-    fn price(&self, symbol: &&'static str) -> Real {
-        match *symbol {
+impl Snapshot {
+    /// This bar's price for `symbol` — used to feed the wallet and to print fills.
+    fn price(&self, symbol: &str) -> Real {
+        match symbol {
             "A" => self.a.close,
             "B" => self.b.close,
             _ => 0.0,
@@ -62,23 +62,25 @@ impl Strategy for DualSma {
     type Input = Snapshot;
     type Symbol = &'static str;
 
-    fn evaluate(&mut self, snap: Snapshot, wallet: &mut dyn Wallet<&'static str>) {
-        // Advance every signal every bar (each fed its own symbol's candle),
-        // then act — splitting capital half to each name.
-        let a_enter = self.a_enter.update(snap.a);
-        let a_exit = self.a_exit.update(snap.a);
-        let b_enter = self.b_enter.update(snap.b);
-        let b_exit = self.b_exit.update(snap.b);
+    fn update(&mut self, snap: Snapshot) {
+        // Advance every signal every bar, each fed its own symbol's candle.
+        self.a_enter.update(snap.a);
+        self.a_exit.update(snap.a);
+        self.b_enter.update(snap.b);
+        self.b_exit.update(snap.b);
+    }
 
-        if a_enter {
-            wallet.open(self.a, Side::Buy, Size::funds_frac(0.5), snap.a.close);
-        } else if a_exit {
-            wallet.close(self.a, snap.a.close);
+    fn trade(&self, wallet: &mut dyn Wallet<&'static str>) {
+        // Split capital half to each name: `value_frac(0.5)` is 50% of equity.
+        if self.a_enter.value() {
+            let _ = wallet.set(self.a, Side::Buy, Size::value_frac(0.5));
+        } else if self.a_exit.value() {
+            let _ = wallet.close(self.a);
         }
-        if b_enter {
-            wallet.open(self.b, Side::Buy, Size::funds_frac(0.5), snap.b.close);
-        } else if b_exit {
-            wallet.close(self.b, snap.b.close);
+        if self.b_enter.value() {
+            let _ = wallet.set(self.b, Side::Buy, Size::value_frac(0.5));
+        } else if self.b_exit.value() {
+            let _ = wallet.close(self.b);
         }
     }
 
@@ -101,9 +103,12 @@ fn main() {
 
     for (i, snap) in bars.iter().enumerate() {
         let filled = wallet.orders().len();
-        strat.evaluate(*snap, &mut wallet);
+        wallet.update("A", Reference(snap.a.close));
+        wallet.update("B", Reference(snap.b.close));
+        strat.update(*snap);
+        strat.trade(&mut wallet);
         for order in &wallet.orders()[filled..] {
-            let price = snap.price(&order.symbol);
+            let price = snap.price(order.symbol);
             println!(
                 "bar {i:>3}  {:<4} {:>3} {:8.3} @ {:7.2}",
                 format!("{:?}", order.side).to_uppercase(),
@@ -114,14 +119,13 @@ fn main() {
         }
     }
 
-    let last = *bars.last().unwrap();
-    println!("\nfinal A position: {:+.3}", wallet.position(&"A"));
-    println!("final B position: {:+.3}", wallet.position(&"B"));
-    println!("final funds:      {:.2}", wallet.funds());
-    println!("final equity:     {:.2}", wallet.equity(&last));
+    println!("\nfinal A position: {:+.3}", wallet.position(&"A").amount);
+    println!("final B position: {:+.3}", wallet.position(&"B").amount);
+    println!("final funds:      {:.2}", wallet.funds().0);
+    println!("final equity:     {:.2}", wallet.equity().0);
     println!(
         "strategy growth:  {:+.1}%",
-        (wallet.equity(&last) / STARTING_FUNDS - 1.0) * 100.0
+        (wallet.equity().0 / STARTING_FUNDS - 1.0) * 100.0
     );
 }
 

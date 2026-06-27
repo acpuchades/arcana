@@ -3,7 +3,7 @@
 use crate::indicators::{Close, Current, Roc, Rsi};
 use crate::prelude::*;
 
-use super::{enter_all_in, is_long, is_short};
+use super::{is_long, is_short};
 
 /// Rate-of-change momentum, always-in long/short.
 ///
@@ -27,14 +27,17 @@ impl<Sym: Clone> Strategy for MomentumRoc<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let roc = self.roc.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if let Some(roc) = roc {
+    fn update(&mut self, candle: Candle) {
+        self.roc.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if let Some(roc) = self.roc.current() {
             if roc > 0.0 && !is_long(pos) {
-                enter_all_in(wallet, &self.symbol, Side::Buy, candle.close);
+                let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
             } else if roc < 0.0 && !is_short(pos) {
-                enter_all_in(wallet, &self.symbol, Side::Sell, candle.close);
+                let _ = wallet.set(self.symbol.clone(), Side::Sell, Size::value_frac(1.0));
             }
         }
     }
@@ -66,14 +69,17 @@ impl<Sym: Clone> Strategy for RsiMidline<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let rsi = self.rsi.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if let Some(rsi) = rsi {
+    fn update(&mut self, candle: Candle) {
+        self.rsi.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if let Some(rsi) = self.rsi.current() {
             if rsi > 50.0 && !is_long(pos) {
-                enter_all_in(wallet, &self.symbol, Side::Buy, candle.close);
+                let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
             } else if rsi < 50.0 && !is_short(pos) {
-                enter_all_in(wallet, &self.symbol, Side::Sell, candle.close);
+                let _ = wallet.set(self.symbol.clone(), Side::Sell, Size::value_frac(1.0));
             }
         }
     }

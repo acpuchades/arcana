@@ -3,7 +3,7 @@
 use crate::indicators::{Bollinger, Current, Mfi, Rsi, Sma, StdDev, Stochastic, Value};
 use crate::prelude::*;
 
-use super::{enter_all_in, is_flat, is_long, is_short};
+use super::{is_flat, is_long, is_short};
 
 /// RSI oversold-bounce, long/flat.
 ///
@@ -29,14 +29,17 @@ impl<Sym: Clone> Strategy for RsiReversal<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -72,14 +75,17 @@ impl<Sym: Clone> Strategy for BollingerReversion<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -118,14 +124,17 @@ impl<Sym: Clone> Strategy for StochasticReversal<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -168,14 +177,17 @@ impl<Sym: Clone> Strategy for StochRsiReversal<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -209,14 +221,17 @@ impl<Sym: Clone> Strategy for MfiReversal<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -256,16 +271,19 @@ impl<Sym: Clone> Strategy for ZScoreReversion<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let z = self.z.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if let Some(z) = z {
+    fn update(&mut self, candle: Candle) {
+        self.z.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if let Some(z) = self.z.current() {
             if z <= -self.entry && !is_long(pos) {
-                enter_all_in(wallet, &self.symbol, Side::Buy, candle.close);
+                let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
             } else if z >= self.entry && !is_short(pos) {
-                enter_all_in(wallet, &self.symbol, Side::Sell, candle.close);
+                let _ = wallet.set(self.symbol.clone(), Side::Sell, Size::value_frac(1.0));
             } else if (is_long(pos) && z >= 0.0) || (is_short(pos) && z <= 0.0) {
-                wallet.close(self.symbol.clone(), candle.close);
+                let _ = wallet.close(self.symbol.clone());
             }
         }
     }

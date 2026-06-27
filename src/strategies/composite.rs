@@ -4,7 +4,7 @@
 use crate::indicators::{Adx, Current, Keltner, Rsi, Sma, Value};
 use crate::prelude::*;
 
-use super::{enter_all_in, is_flat, is_long, is_short};
+use super::{is_flat, is_long, is_short};
 
 /// ADX-gated moving-average crossover, long/flat.
 ///
@@ -35,14 +35,17 @@ impl<Sym: Clone> Strategy for AdxTrendFilter<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -87,14 +90,17 @@ impl<Sym: Clone> Strategy for RsiPullback<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if enter && is_flat(pos) {
-            wallet.open(self.symbol.clone(), Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit && !is_flat(pos) {
-            wallet.close(self.symbol.clone(), candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.enter.value() && is_flat(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() && !is_flat(pos) {
+            let _ = wallet.close(self.symbol.clone());
         }
     }
 
@@ -130,14 +136,17 @@ impl<Sym: Clone> Strategy for KeltnerBreakout<Sym> {
     type Input = Candle;
     type Symbol = Sym;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<Sym>) {
-        let up = self.up.update(candle);
-        let down = self.down.update(candle);
-        let pos = wallet.position(&self.symbol);
-        if up && !is_long(pos) {
-            enter_all_in(wallet, &self.symbol, Side::Buy, candle.close);
-        } else if down && !is_short(pos) {
-            enter_all_in(wallet, &self.symbol, Side::Sell, candle.close);
+    fn update(&mut self, candle: Candle) {
+        self.up.update(candle);
+        self.down.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
+        let pos = wallet.position(&self.symbol).amount;
+        if self.up.value() && !is_long(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+        } else if self.down.value() && !is_short(pos) {
+            let _ = wallet.set(self.symbol.clone(), Side::Sell, Size::value_frac(1.0));
         }
     }
 

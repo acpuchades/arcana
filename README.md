@@ -153,8 +153,9 @@ implementation living in a downstream crate.
 use arcana::prelude::*;
 use arcana::indicators::{Current, Sma};
 
-// Own your signals; act on the wallet. `Size` is absolute units or a fraction of
-// funds / current position, and `Side` gives direction — so position sizing,
+// Own your signals; act on the wallet. `update` advances the signals; `trade`
+// reads them and acts. `Size` is absolute units or a fraction of funds / equity /
+// current position, and `Side` gives direction — so position sizing,
 // short-selling, and staying always-in-market are just what the code does.
 struct GoldenCross {
     symbol: &'static str,
@@ -166,15 +167,19 @@ impl Strategy for GoldenCross {
     type Input = Candle;
     type Symbol = &'static str;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<&'static str>) {
+    fn update(&mut self, candle: Candle) {
         // Advance EVERY signal every bar (don't short-circuit, or a skipped one
-        // desyncs from the price stream), then act on the results.
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        if enter {
-            wallet.open(self.symbol, Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit {
-            wallet.close(self.symbol, candle.close);
+        // desyncs from the price stream).
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<&'static str>) {
+        // The wallet is priced from outside; `trade` just reads signals and acts.
+        if self.enter.value() {
+            let _ = wallet.set(self.symbol, Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() {
+            let _ = wallet.close(self.symbol);
         }
     }
 
@@ -193,16 +198,20 @@ let mut wallet = PaperWallet::new(10_000.0);
 
 # let feed: Vec<Candle> = Vec::new();
 for candle in feed {
-    strat.evaluate(candle, &mut wallet);
+    wallet.update("AAPL", Reference(candle.close));  // price the wallet from outside
+    strat.update(candle);                            // advance signals
+    strat.trade(&mut wallet);                        // act
 }
 let _orders = wallet.orders();        // the trade blotter
 ```
 
-`wallet.open` is additive (scale in), `set` targets an absolute position
-(an opposite-side `set` reverses), and `close` flattens. For **multi-asset**
-strategies, make `Input` a snapshot of several symbols (implementing `Market` so
-the wallet can price each) and act on more than one symbol per `evaluate` — see
-the `pairs` example. The trading/execution/event-bus machinery itself is out of
+The wallet is fed each symbol's price every bar via `wallet.update`; `set`
+targets an absolute position (an opposite-side `set` reverses, `value_frac(1.0)`
+is all-in), and `close` flattens. Queries return unit-tagged amounts
+(`Reference` cash/equity, `Quantity` of a symbol). For **multi-asset**
+strategies, make `Input` a snapshot of several symbols, feed the wallet each
+symbol's price, and act on more than one symbol per `trade` — see the `pairs`
+example. The trading/execution/event-bus machinery itself is out of
 scope for this crate; it belongs in a downstream project that implements `Wallet`.
 
 ## What's included
@@ -273,9 +282,9 @@ for o, h, l, c, v in bars:
 df["ema20"] = ta.ema(ta.close(), 20).feed(df)
 ```
 
-The strategy layer is exposed too: a `PaperWallet` you trade into with
-`open`/`set`/`close`, plus `Order` and `Size`. A "strategy" in Python is just
-your own code driving the wallet each bar:
+The strategy layer is exposed too: a `PaperWallet` you feed prices into
+(`update`) and trade with `set`/`set_position`/`close`, plus `Order` and `Size`.
+A "strategy" in Python is just your own code driving the wallet each bar:
 
 ```python
 import arcana as ta
@@ -286,11 +295,12 @@ wallet = ta.PaperWallet(10_000.0)
 
 for o, h, l, c, v in bars:
     candle = ta.Candle(o, h, l, c, v)
+    wallet.update("AAPL", c)                                  # price the wallet
     went_long, went_flat = enter.update(candle), exit_.update(candle)  # advance both
     if went_long:
-        wallet.open("AAPL", "buy", ta.Size.funds_frac(1.0), c)   # size: units / funds / position
+        wallet.set("AAPL", "buy", ta.Size.value_frac(1.0))   # size: units / funds / equity / position
     elif went_flat:
-        wallet.close("AAPL", c)
+        wallet.close("AAPL")
 
 print(wallet.funds, wallet.position("AAPL"), wallet.orders())
 ```

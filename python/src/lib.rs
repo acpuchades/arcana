@@ -35,7 +35,9 @@ use arcana_core::signals::IndicatorExt;
 use arcana_core::signals::compare::{
     Compare, DEFAULT_EPSILON, EqOp, GeOp, GtOp, LeOp, LtOp, NeOp,
 };
-use arcana_core::strategy::{Order, PaperWallet, Side, Size, Wallet};
+use arcana_core::strategy::{
+    Order, PaperWallet, Quantity, Reference, Side, Size, Wallet, WalletError,
+};
 use arcana_core::types::{Candle, Real};
 use arcana_core::{Indicator, Signal, SignalExt};
 
@@ -1056,14 +1058,22 @@ impl PySize {
             inner: Size::Units(units),
         }
     }
-    /// A fraction of available funds, converted to units at the fill price.
+    /// A fraction of available funds (cash), converted to units at the price.
     #[staticmethod]
     fn funds_frac(fraction: f64) -> Self {
         PySize {
             inner: Size::FundsFraction(fraction),
         }
     }
-    /// A fraction of the symbol's current position.
+    /// A fraction of total equity, converted to units at the price.
+    /// `value_frac(1.0)` is "all-in" and reverses cleanly on a flip.
+    #[staticmethod]
+    fn value_frac(fraction: f64) -> Self {
+        PySize {
+            inner: Size::ValueFraction(fraction),
+        }
+    }
+    /// A fraction of the symbol's current position (adjust-only).
     #[staticmethod]
     fn position_frac(fraction: f64) -> Self {
         PySize {
@@ -1108,13 +1118,16 @@ impl PyOrder {
 }
 
 /// A paper-trading wallet a strategy trades into: funds, per-symbol positions,
-/// and a blotter of executed orders. (The live-broker counterpart would be a
-/// separate wallet type implementing the same interface.)
+/// the prices fed to it, and a blotter of executed orders. (The live-broker
+/// counterpart would be a separate wallet type implementing the same interface.)
 ///
-/// The mutating methods (`open`/`set`/`close`) take the fill `price`, assume the
-/// order fills there, and book it against `funds`. `open` is additive (scale a
-/// position); `set` is absolute (an opposite-side `set` reverses); `close`
-/// flattens. Each returns the resulting `Order`, or `None` if nothing traded.
+/// Feed each symbol's price every tick with `update(symbol, price)`; the wallet
+/// is otherwise market-agnostic. `set(symbol, side, size)` targets an absolute
+/// position (an opposite-side `set` reverses; `Size.value_frac(1.0)` is all-in),
+/// `set_position(symbol, target)` drives to an absolute unit count, and `close`
+/// flattens. Each returns the resulting `Order`, or `None` if nothing traded,
+/// and raises `ValueError` if the movement is impossible (no/zero price, or a
+/// buy beyond available funds).
 #[pyclass(name = "PaperWallet")]
 struct PyWallet {
     inner: PaperWallet<String>,
@@ -1133,7 +1146,7 @@ impl PyWallet {
     /// The available cash balance.
     #[getter]
     fn funds(&self) -> f64 {
-        self.inner.funds()
+        self.inner.funds().0
     }
 
     /// Whether no positions are currently held.
@@ -1143,14 +1156,19 @@ impl PyWallet {
 
     /// The signed position in `symbol` (positive long, negative short).
     fn position(&self, symbol: &str) -> f64 {
-        self.inner.position(&symbol.to_string())
+        self.inner.position(&symbol.to_string()).amount
+    }
+
+    /// The last price fed for `symbol`, or `None` if never fed.
+    fn price(&self, symbol: &str) -> Option<f64> {
+        self.inner.price(&symbol.to_string()).map(|p| p.0)
     }
 
     /// The held positions as a `{symbol: quantity}` dict.
     fn positions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-        for (symbol, qty) in self.inner.positions() {
-            dict.set_item(symbol, qty)?;
+        for position in self.inner.positions() {
+            dict.set_item(position.symbol, position.amount)?;
         }
         Ok(dict)
     }
@@ -1165,56 +1183,51 @@ impl PyWallet {
             .collect()
     }
 
-    /// Forget the blotter history (positions and funds are untouched).
+    /// Forget the blotter history (positions, prices and funds are untouched).
     fn clear_blotter(&mut self) {
         self.inner.clear_blotter();
     }
 
-    /// Mark-to-market equity: funds plus each position valued at the given
-    /// `{symbol: price}` prices (a missing symbol is valued at 0).
-    fn equity(&self, prices: &Bound<'_, PyDict>) -> PyResult<f64> {
-        let mut total = self.inner.funds();
-        for (symbol, qty) in self.inner.positions() {
-            let price = match prices.get_item(symbol.as_str())? {
-                Some(p) => p.extract::<f64>()?,
-                None => 0.0,
-            };
-            total += qty * price;
-        }
-        Ok(total)
+    /// Mark-to-market equity: funds plus each position valued at its fed price.
+    fn equity(&self) -> f64 {
+        self.inner.equity().0
     }
 
-    /// Additively trade `side` `size` of `symbol` at `price` (open/scale).
-    fn open(
-        &mut self,
-        symbol: String,
-        side: &str,
-        size: &Bound<'_, PyAny>,
-        price: f64,
-    ) -> PyResult<Option<PyOrder>> {
-        let order = self
-            .inner
-            .open(symbol, parse_side(side)?, coerce_size(size)?, price);
-        Ok(order.map(|inner| PyOrder { inner }))
+    /// Feed `symbol`'s current price. Call this each tick before trading or
+    /// reading `equity`.
+    fn update(&mut self, symbol: String, price: f64) {
+        self.inner.update(symbol, Reference(price));
     }
 
-    /// Set the target position in `symbol` to `side` `size` at `price`.
+    /// Drive the position in `symbol` to `target` signed units.
+    fn set_position(&mut self, symbol: String, target: f64) -> PyResult<Option<PyOrder>> {
+        wrap_order(self.inner.set_position(Quantity {
+            symbol,
+            amount: target,
+        }))
+    }
+
+    /// Set the target position in `symbol` to `side` `size`.
     fn set(
         &mut self,
         symbol: String,
         side: &str,
         size: &Bound<'_, PyAny>,
-        price: f64,
     ) -> PyResult<Option<PyOrder>> {
-        let order = self
-            .inner
-            .set(symbol, parse_side(side)?, coerce_size(size)?, price);
-        Ok(order.map(|inner| PyOrder { inner }))
+        wrap_order(self.inner.set(symbol, parse_side(side)?, coerce_size(size)?))
     }
 
-    /// Flatten `symbol` at `price`.
-    fn close(&mut self, symbol: String, price: f64) -> Option<PyOrder> {
-        self.inner.close(symbol, price).map(|inner| PyOrder { inner })
+    /// Flatten `symbol`.
+    fn close(&mut self, symbol: String) -> PyResult<Option<PyOrder>> {
+        wrap_order(self.inner.close(symbol))
+    }
+}
+
+/// Map a wallet result to Python: an order, `None`, or a `ValueError`.
+fn wrap_order(result: Result<Option<Order<String>>, WalletError>) -> PyResult<Option<PyOrder>> {
+    match result {
+        Ok(order) => Ok(order.map(|inner| PyOrder { inner })),
+        Err(error) => Err(PyValueError::new_err(error.to_string())),
     }
 }
 

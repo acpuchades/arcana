@@ -22,15 +22,17 @@
 //!   object; combine them further with the [`SignalExt`] combinators
 //!   (`and`/`or`/`xor`/`not`/`changed`).
 //! * [`Strategy`] — the *decision* layer. Unlike the pure layers below it, a
-//!   strategy *acts*: each bar its [`evaluate`](Strategy::evaluate) reads the
-//!   input and opens, scales, or closes positions on a [`Wallet`] handed to it
-//!   (`wallet.open`/`set`/`close`, with a [`Side`] and a [`Size`] that is
-//!   absolute or a fraction of funds/position). [`Wallet`] is a *trait*, so the
-//!   same strategy runs against a [`PaperWallet`] backtest or a live broker
-//!   wallet unchanged; the wallet owns the portfolio (funds, positions,
-//!   blotter). Acting on several symbols per bar makes it serve single- and
-//!   multi-asset strategies alike — direction, sizing, and short-selling are all
-//!   just what the strategy's code does.
+//!   strategy *acts*, in two steps: [`update`](Strategy::update) advances its
+//!   signals (touching only itself), then [`trade`](Strategy::trade) reads that
+//!   state and sets or closes positions on a [`Wallet`] handed to it
+//!   (`wallet.set`/`close`, with a [`Side`] and a [`Size`] that is absolute or a
+//!   fraction of funds/equity/position). The wallet is priced from outside via
+//!   [`Wallet::update`] and returns unit-tagged [`Reference`] / [`Quantity`]
+//!   amounts. [`Wallet`] is a *trait*, so the same strategy runs against a
+//!   [`PaperWallet`] backtest or a live broker wallet unchanged; the wallet owns
+//!   the portfolio (funds, positions, blotter). Acting on several symbols per bar
+//!   makes it serve single- and multi-asset strategies alike — direction,
+//!   sizing, and short-selling are all just what the strategy's code does.
 //!
 //! ```
 //! use arcana::prelude::*;
@@ -64,7 +66,9 @@ pub mod types;
 
 pub use indicator::Indicator;
 pub use signal::{Signal, SignalExt};
-pub use strategy::{Market, Order, PaperWallet, Side, Size, Strategy, Wallet};
+pub use strategy::{
+    Order, PaperWallet, Quantity, Reference, Side, Size, Strategy, Wallet, WalletError,
+};
 pub use types::{Candle, Real};
 
 /// Convenient glob-import of the core traits and types.
@@ -72,6 +76,8 @@ pub mod prelude {
     pub use crate::indicator::Indicator;
     pub use crate::signal::{Signal, SignalExt};
     pub use crate::signals::IndicatorExt;
-    pub use crate::strategy::{Market, Order, PaperWallet, Side, Size, Strategy, Wallet};
+    pub use crate::strategy::{
+        Order, PaperWallet, Quantity, Reference, Side, Size, Strategy, Wallet, WalletError,
+    };
     pub use crate::types::{Candle, Real};
 }

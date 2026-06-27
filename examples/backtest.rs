@@ -45,16 +45,19 @@ impl Strategy for GoldenCross {
     type Input = Candle;
     type Symbol = &'static str;
 
-    fn evaluate(&mut self, candle: Candle, wallet: &mut dyn Wallet<&'static str>) {
+    fn update(&mut self, candle: Candle) {
         // Advance BOTH signals every bar (never short-circuit, or the skipped
-        // one desyncs from the price stream), then act on the results.
-        let enter = self.enter.update(candle);
-        let exit = self.exit.update(candle);
-        // Commit all funds long on the golden cross; flatten on the death cross.
-        if enter {
-            wallet.open(self.symbol, Side::Buy, Size::funds_frac(1.0), candle.close);
-        } else if exit {
-            wallet.close(self.symbol, candle.close);
+        // one desyncs from the price stream).
+        self.enter.update(candle);
+        self.exit.update(candle);
+    }
+
+    fn trade(&self, wallet: &mut dyn Wallet<&'static str>) {
+        // Commit all equity long on the golden cross; flatten on the death cross.
+        if self.enter.value() {
+            let _ = wallet.set(self.symbol, Side::Buy, Size::value_frac(1.0));
+        } else if self.exit.value() {
+            let _ = wallet.close(self.symbol);
         }
     }
 
@@ -73,7 +76,9 @@ fn main() {
 
     for (date, candle) in &candles {
         let filled = wallet.orders().len();
-        strategy.evaluate(*candle, &mut wallet);
+        wallet.update(SYMBOL, Reference(candle.close));
+        strategy.update(*candle);
+        strategy.trade(&mut wallet);
         // Print whatever this bar appended to the blotter.
         for order in &wallet.orders()[filled..] {
             println!(
@@ -85,14 +90,14 @@ fn main() {
         }
     }
 
-    // Equity = cash on hand + the open position marked to the last close.
-    let last = candles.last().unwrap().1;
-    let equity = wallet.equity(&last);
-    println!("\nfinal funds:     {:.2}", wallet.funds());
+    // Equity = cash on hand + the open position marked to the last fed price.
+    let equity = wallet.equity().0;
+    println!("\nfinal funds:     {:.2}", wallet.funds().0);
     println!("final equity:    {:.2}", equity);
     println!("strategy growth: {:+.1}%", (equity / STARTING_FUNDS - 1.0) * 100.0);
 
     // Buy-and-hold benchmark over the same window.
+    let last = candles.last().unwrap().1;
     let first = candles.first().unwrap().1.close;
     println!("buy & hold:      {:+.1}%", (last.close / first - 1.0) * 100.0);
 }

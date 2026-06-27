@@ -50,7 +50,9 @@ where
 {
     let mut wallet = PaperWallet::new(FUNDS);
     for &candle in candles {
-        strat.evaluate(candle, &mut wallet);
+        wallet.update(SYMBOL, Reference(candle.close));
+        strat.update(candle);
+        strat.trade(&mut wallet);
     }
     wallet
 }
@@ -62,7 +64,7 @@ where
 {
     let wallet = run(strat, candles);
     assert!(!wallet.orders().is_empty(), "{name} never traded");
-    assert!(wallet.funds().is_finite(), "{name} produced non-finite funds");
+    assert!(wallet.funds().0.is_finite(), "{name} produced non-finite funds");
 }
 
 #[test]
@@ -138,13 +140,17 @@ fn reset_returns_a_strategy_to_its_initial_state() {
 
     let mut first = PaperWallet::new(FUNDS);
     for &candle in &c {
-        strat.evaluate(candle, &mut first);
+        first.update(SYMBOL, Reference(candle.close));
+        strat.update(candle);
+        strat.trade(&mut first);
     }
 
     strat.reset();
     let mut second = PaperWallet::new(FUNDS);
     for &candle in &c {
-        strat.evaluate(candle, &mut second);
+        second.update(SYMBOL, Reference(candle.close));
+        strat.update(candle);
+        strat.trade(&mut second);
     }
 
     // After reset the strategy replays identically.
