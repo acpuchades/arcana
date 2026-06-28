@@ -608,11 +608,30 @@ impl SignalSpec {
 // Strategy
 // ---------------------------------------------------------------------------
 
-/// One side of a [`SingleAssetStrategy`]: the entry and exit conditions.
+/// One side of a [`SingleAssetStrategy`]: the entry condition and an optional
+/// exit.
+///
+/// `exit` defaults to a constant-`false` signal. Omitting it is exactly right for
+/// an always-in long/short reversal — the opposite side's `enter` already
+/// reverses the position, so an explicit flatten-to-flat exit would be dead. Give
+/// a side an `exit` only when you want a flat rest (long/flat, or long/short with
+/// a flat state between trades).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SideSpec {
     pub enter: SignalSpec,
-    pub exit: SignalSpec,
+    #[serde(default)]
+    pub exit: Option<SignalSpec>,
+}
+
+impl SideSpec {
+    /// Build this side's exit signal, defaulting a missing one to constant-`false`
+    /// (matching the unwired slots in [`SingleAssetStrategy::new`]).
+    fn exit(&self) -> DynSignal {
+        self.exit
+            .as_ref()
+            .map(SignalSpec::build)
+            .unwrap_or_else(|| DynSignal::new(Const::<Candle>::new(false)))
+    }
 }
 
 /// A whole `strategy.yml`: the traded symbol plus its long/short sides (or a
@@ -630,9 +649,20 @@ pub struct StrategySpec {
 }
 
 impl StrategySpec {
-    /// Parse a `strategy.yml` document.
-    pub fn from_yaml(yaml: &str) -> Result<Self, serde_norway::Error> {
-        serde_norway::from_str(yaml)
+    /// Parse a `strategy.yml` document, resolving `!param` placeholders against
+    /// `params` first (see [`crate::params`]).
+    ///
+    /// Two passes: the document is read into an untyped [`serde_norway::Value`],
+    /// every `!param` node is rewritten to its resolved value, and only then is
+    /// the result deserialized into the typed spec — so a param can stand in for a
+    /// number, a symbol, or any other field that is concretely typed here.
+    pub fn from_yaml_with_params(
+        yaml: &str,
+        params: &std::collections::HashMap<String, serde_norway::Value>,
+    ) -> anyhow::Result<Self> {
+        let value: serde_norway::Value = serde_norway::from_str(yaml)?;
+        let value = crate::params::substitute(value, params)?;
+        Ok(serde_norway::from_value(value)?)
     }
 
     /// Build the live [`SingleAssetStrategy`] this spec describes.
@@ -642,10 +672,10 @@ impl StrategySpec {
         }
         let mut strat = SingleAssetStrategy::new(self.symbol.clone());
         if let Some(long) = &self.long {
-            strat = strat.long_on(long.enter.build(), long.exit.build());
+            strat = strat.long_on(long.enter.build(), long.exit());
         }
         if let Some(short) = &self.short {
-            strat = strat.short_on(short.enter.build(), short.exit.build());
+            strat = strat.short_on(short.enter.build(), short.exit());
         }
         strat
     }
@@ -699,7 +729,7 @@ mod tests {
               enter: !crosses_below { lhs: !sma { period: 5 }, rhs: !sma { period: 20 } }
               exit:  !crosses_above { lhs: !sma { period: 5 }, rhs: !sma { period: 20 } }
         "#;
-        let spec = StrategySpec::from_yaml(yaml).unwrap();
+        let spec = StrategySpec::from_yaml_with_params(yaml, &std::collections::HashMap::new()).unwrap();
         assert_eq!(spec.symbol, "BTC");
         let _strat = spec.build();
     }

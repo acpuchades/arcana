@@ -252,15 +252,15 @@ writes the result files:
 ```sh
 cargo run --bin fugazi -- run \
   --strategy examples/strategy.yml \
-  --series symbol=BTC,@examples/candles.csv \
+  --series @examples/candles.csv \
   --output-dir out/
 # writes out/trades.csv (time;symbol;side;quantity;price)
 #    and out/returns.csv (time;equity;return)
 ```
 
 Flags: `--strategy <file.yml>`, `--series <spec>` (repeatable), `--output-dir
-<dir>`, `--cash <amount>` (default `10000`). Output files are `;`-delimited for
-Excel.
+<dir>`, `--cash <amount>` (default `10000`), `--param NAME=value` (repeatable —
+see below). Output files are `;`-delimited for Excel.
 
 **Data — `--series`.** Each `--series` is a `,`-separated list of terms:
 `key=value` adds a constant column, `@file.csv` loads a CSV's columns and rows
@@ -274,7 +274,10 @@ and `open`/`high`/`low`/`close` (`volume` optional); `time` is sorted as an
 opaque token (dates, epochs — anything sortable).
 
 **Strategy — `strategy.yml`.** A `symbol` plus `long`/`short` sides (each an
-`enter`/`exit` signal), or `buy_and_hold: true`. Signals and sources are written
+`enter` signal and an optional `exit`), or `buy_and_hold: true`. A side's `exit`
+defaults to never-fire, which is exactly right for an always-in long/short
+reversal (the opposite side's `enter` reverses the position); give an `exit` only
+for a flat rest. Signals and sources are written
 with YAML **tags** — `!sma { source: close, period: 5 }` — while candle-field
 leaves are bare words (`close`, `high`, `volume`, …). Omitted `source` defaults
 to `close`. The vocabulary mirrors the library one-to-one:
@@ -296,8 +299,32 @@ to `close`. The vocabulary mirrors the library one-to-one:
   { lhs, rhs }`; `!and`/`!or`/`!xor { lhs, rhs }`, `!all [ … ]`, `!any [ … ]`,
   `!not <signal>`, `!changed <signal>`, `!const <bool>`.
 
+**Parameters — `!param`.** Any value in the YAML can be a placeholder resolved at
+run time with `--param NAME=value` (repeatable), so one file covers many
+variations of a strategy (periods, thresholds, the traded symbol):
+
+```yaml
+symbol: !param { key: SYM, default: BTC }
+long:
+  enter: !crosses_above
+    lhs: !sma { source: close, period: !param { key: FAST } }          # required
+    rhs: !sma { source: close, period: !param { key: SLOW, default: 8 } }  # optional
+```
+
+```sh
+cargo run --bin fugazi -- run --strategy examples/strategy.params.yml \
+  --param FAST=5 --param SLOW=20 --series @examples/candles.csv --output-dir out/
+```
+
+A `default` makes a param optional; without one, a missing value is an error.
+`!param NAME` is shorthand for `!param { key: NAME }`. Values are parsed as YAML
+scalars (so `FAST=5` is a number, `SYM=BTC` a string), then substituted before the
+strategy is typed — so a param can stand in anywhere, including where a number is
+required.
+
 See [`examples/strategy.yml`](examples/strategy.yml) for a complete SMA-crossover
-strategy.
+strategy, and [`examples/strategy.params.yml`](examples/strategy.params.yml) for
+the parameterised version.
 
 ## Examples
 

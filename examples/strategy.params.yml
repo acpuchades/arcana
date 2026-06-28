@@ -1,0 +1,30 @@
+# The same always-in SMA crossover as `strategy.yml`, but parameterised so you
+# can sweep the fast/slow periods (and the traded symbol) from the command line
+# without editing the file — handy for testing variations of one strategy.
+#
+# Reference a value with the `!param` tag. A `default` makes it optional; without
+# one the param is required and a missing value is an error:
+#
+#   !param { key: FAST }              # required
+#   !param { key: SLOW, default: 8 }  # optional, falls back to 8
+#   !param SYM                        # bare-string shorthand for { key: SYM }
+#
+# Override with `--param NAME=value` (repeatable). Values are parsed as YAML
+# scalars, so `FAST=3` is a number and `SYM=BTC` a string.
+#
+# Run it (every param has a default, so all are optional). candles.csv carries
+# its own `symbol` column — if you override SYM here, point --series at a file
+# whose symbol matches:
+#   fugazi run --strategy examples/strategy.params.yml \
+#              --param FAST=5 --param SLOW=20 \
+#              --series @examples/candles.csv \
+#              --output-dir out/
+symbol: !param { key: SYM, default: BTC }
+long:
+  enter: !crosses_above
+    lhs: !sma { source: close, period: !param { key: FAST, default: 3 } }
+    rhs: !sma { source: close, period: !param { key: SLOW, default: 8 } }
+short:
+  enter: !crosses_below
+    lhs: !sma { source: close, period: !param { key: FAST, default: 3 } }
+    rhs: !sma { source: close, period: !param { key: SLOW, default: 8 } }

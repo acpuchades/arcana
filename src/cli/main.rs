@@ -6,13 +6,14 @@
 //!
 //! ```text
 //! fugazi run --strategy strategy.yml \
-//!            --series symbol=BTC,@candles.csv \
+//!            --series @candles.csv \
 //!            --output-dir out/
 //! ```
 
 mod backtest;
 mod data;
 mod dynd;
+mod params;
 mod spec;
 
 use std::path::PathBuf;
@@ -53,6 +54,10 @@ struct RunArgs {
     /// Initial cash for the paper wallet.
     #[arg(long, default_value_t = 10_000.0)]
     cash: f64,
+
+    /// Override a `!param { key: NAME }` placeholder (repeatable): NAME=value.
+    #[arg(long = "param", value_name = "NAME=VALUE")]
+    param: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -65,7 +70,8 @@ fn main() -> Result<()> {
 fn run(args: RunArgs) -> Result<()> {
     let yaml = std::fs::read_to_string(&args.strategy)
         .with_context(|| format!("reading strategy `{}`", args.strategy.display()))?;
-    let spec = spec::StrategySpec::from_yaml(&yaml)
+    let params = params::parse(&args.param)?;
+    let spec = spec::StrategySpec::from_yaml_with_params(&yaml, &params)
         .with_context(|| format!("parsing strategy `{}`", args.strategy.display()))?;
 
     let frame = data::DataFrame::from_series(&args.series)?;
