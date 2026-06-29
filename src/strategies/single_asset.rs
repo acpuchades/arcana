@@ -43,6 +43,14 @@ fn level_value(level: &Option<Level>) -> Option<Real> {
 /// a level-valued signal (e.g. `roc > 0`) drives the same idempotent behaviour an
 /// edge signal does.
 ///
+/// Entries and signal exits are **market orders**: they fill a bar *after* the
+/// signal, at the next bar's `open` (the [`Wallet`](crate::Wallet) queues them —
+/// see [`PaperWallet`](crate::PaperWallet)), so the bar whose `close` triggered
+/// the signal is never also the bar it fills on. The strategy therefore records
+/// the entry price (its [`EntryAnchor`]) from that fill bar's open, not at the
+/// moment it signalled. Protective stops are the exception — they fill intra-bar
+/// at an explicit price (below).
+///
 /// ## Protective stops
 ///
 /// A stop is a **price level** — an ordinary indicator expression over the
@@ -253,29 +261,35 @@ impl<Sym: Clone> Strategy for SingleAssetStrategy<Sym> {
 
     fn trade(&self, wallet: &mut dyn Wallet<Sym>) {
         let pos = wallet.position(&self.symbol).amount;
-        // Entries first (all-in, reversal-capable); arm the anchor at the fill.
+        // A queued market entry fills inside the wallet's `update`, at this bar's
+        // open — a bar *after* the signal — so `set` returned no order to read the
+        // fill price from. The first bar we observe a position whose anchor is
+        // unarmed, record the entry at the open, where the queued order filled.
+        if (is_long(pos) || is_short(pos))
+            && self.anchor.get().is_none()
+            && let Some(candle) = self.last_candle
+        {
+            self.anchor.arm(candle.open);
+        }
+        // Entries first (all-in, reversal-capable). The fill lands next bar at the
+        // open; clear the anchor now so it re-arms there (a reversal voids the old
+        // entry, and a fresh entry is already flat-and-clear).
         if self.long.is_true() && !is_long(pos) {
-            if let Ok(Some(order)) = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0))
-            {
-                self.anchor.arm(order.price);
-            }
+            let _ = wallet.set(self.symbol.clone(), Side::Buy, Size::value_frac(1.0));
+            self.anchor.clear();
             return;
         }
         if self.short.is_true() && !is_short(pos) {
-            if let Ok(Some(order)) =
-                wallet.set(self.symbol.clone(), Side::Sell, Size::value_frac(1.0))
-            {
-                self.anchor.arm(order.price);
-            }
+            let _ = wallet.set(self.symbol.clone(), Side::Sell, Size::value_frac(1.0));
+            self.anchor.clear();
             return;
         }
-        // Signal-driven flatten-to-flat exits.
+        // Signal-driven flatten-to-flat exits (also fill next bar at the open).
         if (self.close_long.is_true() && is_long(pos))
             || (self.close_short.is_true() && is_short(pos))
         {
-            if wallet.close(self.symbol.clone()).is_ok() {
-                self.anchor.clear();
-            }
+            let _ = wallet.close(self.symbol.clone());
+            self.anchor.clear();
             return;
         }
         // Protective stops on the active side. The fill is the level itself —
@@ -355,12 +369,17 @@ mod tests {
 
     #[test]
     fn long_stop_loss_fills_at_the_level() {
-        // Buy-and-hold the first bar at 100, with a 10% stop at 90.
+        // Buy-and-hold, 10% stop. The first bar signals; the entry fills at the
+        // *next* bar's open (100), anchoring the stop at 90.
         let mut strat = SingleAssetStrategy::buy_and_hold("X").stop_loss_pct(0.10);
-        // Bar 2 trades down through 90 (low 88) but opens above it.
+        // The third bar trades down through 90 (low 88) but opens above it.
         let w = run(
             &mut strat,
-            &[flat_bar(100.0), Candle::new(95.0, 96.0, 88.0, 89.0, 0.0)],
+            &[
+                flat_bar(100.0),                          // signal: queue the entry
+                flat_bar(100.0),                          // entry fills at 100; stop = 90
+                Candle::new(95.0, 96.0, 88.0, 89.0, 0.0), // down through 90, opens above
+            ],
         );
         let exit = w.orders().last().unwrap();
         assert_eq!(exit.side, Side::Sell);
@@ -370,12 +389,16 @@ mod tests {
 
     #[test]
     fn long_stop_gaps_to_the_open() {
-        // Same stop at 90, but bar 2 gaps down opening at 85, already below it,
+        // Same stop at 90, but the bar gaps down opening at 85, already below it,
         // so the fill is the open, not the (unreachable) stop level.
         let mut strat = SingleAssetStrategy::buy_and_hold("X").stop_loss_pct(0.10);
         let w = run(
             &mut strat,
-            &[flat_bar(100.0), Candle::new(85.0, 86.0, 84.0, 84.0, 0.0)],
+            &[
+                flat_bar(100.0),                          // queue the entry
+                flat_bar(100.0),                          // entry fills at 100; stop = 90
+                Candle::new(85.0, 86.0, 84.0, 84.0, 0.0), // gaps down below the stop
+            ],
         );
         let exit = w.orders().last().unwrap();
         assert_eq!(exit.price, 85.0);
@@ -384,14 +407,16 @@ mod tests {
 
     #[test]
     fn long_trailing_stop_ratchets_up() {
-        // 10% trailing stop. Enter at 100; bar 2 rallies to a high of 130 — which
-        // lifts the stop to 117 only from bar 3 (the trail tracks completed bars).
-        // Bar 3 trades down to 115, crossing 117, and exits there.
+        // 10% trailing stop. The entry fills at the second bar's open (100); the
+        // third bar rallies to a high of 130, which lifts the stop to 117 only from
+        // the fourth bar (the trail tracks completed bars). That bar trades down to
+        // 115, crossing 117, and exits there.
         let mut strat = SingleAssetStrategy::buy_and_hold("X").trailing_stop_pct(0.10);
         let w = run(
             &mut strat,
             &[
-                flat_bar(100.0),
+                flat_bar(100.0),                              // queue the entry
+                flat_bar(100.0),                              // entry fills at 100
                 Candle::new(110.0, 130.0, 109.0, 128.0, 0.0), // sets the peak (130)
                 Candle::new(126.0, 127.0, 115.0, 116.0, 0.0), // stop now 117; low 115 hits it
             ],
@@ -405,7 +430,8 @@ mod tests {
     #[test]
     fn no_stop_out_when_price_holds() {
         let mut strat = SingleAssetStrategy::buy_and_hold("X").stop_loss_pct(0.10);
-        // Never trades below 90: stays long the whole way.
+        // Entry fills at the second bar's open (95); a 10% stop sits at 85.5, and
+        // price never reaches it, so it stays long the whole way.
         let w = run(
             &mut strat,
             &[flat_bar(100.0), flat_bar(95.0), flat_bar(105.0)],

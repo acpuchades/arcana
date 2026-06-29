@@ -1,11 +1,14 @@
 //! The backtest driver: walk one symbol's candles through a strategy and a
 //! [`PaperWallet`], writing the result files and narrating the run.
 //!
-//! Each bar: feed the wallet the candle (it marks to `close` and bounds fills to
-//! the bar's range), `update` the strategy, then `trade` it; any orders the trade
-//! appended to the blotter are emitted to `trades.csv` stamped with this bar's
-//! `time` and the order's own fill price, and the running equity is emitted to
-//! `returns.csv`. Both result files are written `;`-delimited for Excel.
+//! Each bar: feed the wallet the candle (it marks to `close`, bounds fills to the
+//! bar's range, and fills any order queued on the previous bar at this `open`),
+//! `update` the strategy, then `trade` it (queuing this bar's market orders and
+//! booking any immediate stop). Every order appended to the blotter this bar —
+//! the previous bar's market fill and this bar's stops alike — is emitted to
+//! `trades.csv` stamped with this bar's `time` and the order's own fill price, and
+//! the running equity is emitted to `returns.csv`. Both result files are written
+//! `;`-delimited for Excel.
 //!
 //! Console output (silenced by [`RunOptions::quiet`]) is a two-line banner (the
 //! constant tool identity, then the active command), then three blocks: **inputs**
@@ -80,10 +83,12 @@ pub fn run(spec: &StrategySpec, frame: &DataFrame, opts: &RunOptions) -> Result<
     let mut prev_equity = opts.cash;
 
     for (time, candle) in &candles {
+        // Snapshot the blotter *before* feeding the bar: the wallet fills any order
+        // queued on the previous bar here, at this bar's open, and the trade below
+        // may book an immediate stop — both are this bar's fills, stamped its time.
+        let before = wallet.orders().len();
         wallet.update(symbol.clone(), *candle);
         strategy.update(*candle);
-
-        let before = wallet.orders().len();
         strategy.trade(&mut wallet);
         for order in &wallet.orders()[before..] {
             let side = match order.side {

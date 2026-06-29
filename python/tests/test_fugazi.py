@@ -405,11 +405,19 @@ def test_donchian_rejects_mixed_domain_sources():
 def test_wallet_set_position_is_absolute_and_books_funds():
     w = ta.PaperWallet(1_000.0)
     w.update("AAPL", 100.0)
-    order = w.set_position("AAPL", 3.0)
+    # A market order only queues -- nothing books yet, and it returns None.
+    assert w.set_position("AAPL", 3.0) is None
+    assert w.position("AAPL") == pytest.approx(0.0)
+    # The next update fills it at that bar's open (100).
+    w.update("AAPL", 100.0)
+    assert w.position("AAPL") == pytest.approx(3.0)
+    order = w.orders()[-1]
     assert order.symbol == "AAPL"
     assert order.side == "buy"
     assert order.units == pytest.approx(3.0)
-    w.set_position("AAPL", 5.0)  # scale in to the new target
+    # Scale in to a new target, again filled on the next bar.
+    w.set_position("AAPL", 5.0)
+    w.update("AAPL", 100.0)
     assert w.position("AAPL") == pytest.approx(5.0)
     assert w.funds == pytest.approx(1_000.0 - 5.0 * 100.0)
 
@@ -418,8 +426,17 @@ def test_wallet_set_is_absolute_and_reverses():
     w = ta.PaperWallet(10_000.0)
     w.update("X", 50.0)
     w.set("X", "buy", 4.0)
-    assert w.set("X", "buy", 4.0) is None  # idempotent
-    order = w.set("X", "sell", 4.0)  # +4 -> -4 = sell 8
+    w.update("X", 50.0)  # fills the +4 at the open
+    assert w.position("X") == pytest.approx(4.0)
+    # Re-targeting the same side is idempotent: the queued fill is a no-op.
+    n = len(w.orders())
+    w.set("X", "buy", 4.0)
+    w.update("X", 50.0)
+    assert len(w.orders()) == n
+    # Opposite side reverses: +4 -> -4 = sell 8.
+    w.set("X", "sell", 4.0)
+    w.update("X", 50.0)
+    order = w.orders()[-1]
     assert order.side == "sell"
     assert order.units == pytest.approx(8.0)
     assert w.position("X") == pytest.approx(-4.0)
@@ -428,11 +445,14 @@ def test_wallet_set_is_absolute_and_reverses():
 def test_wallet_relative_sizing():
     w = ta.PaperWallet(1_000.0)
     w.update("X", 25.0)
-    # 10% of funds / price 25 = 4 units
-    order = w.set("X", "buy", ta.Size.funds_frac(0.1))
-    assert order.units == pytest.approx(4.0)
+    # 10% of funds / price 25 = 4 units, resolved at the fill (open 25)
+    w.set("X", "buy", ta.Size.funds_frac(0.1))
+    w.update("X", 25.0)
+    assert w.orders()[-1].units == pytest.approx(4.0)
     # set to 50% of the position -> sell 2
-    trimmed = w.set("X", "buy", ta.Size.position_frac(0.5))
+    w.set("X", "buy", ta.Size.position_frac(0.5))
+    w.update("X", 25.0)
+    trimmed = w.orders()[-1]
     assert trimmed.side == "sell"
     assert trimmed.units == pytest.approx(2.0)
 
@@ -441,20 +461,24 @@ def test_wallet_value_fraction_flips_all_in():
     w = ta.PaperWallet(1_000.0)
     w.update("X", 100.0)
     w.set("X", "buy", ta.Size.value_frac(1.0))  # all-in: 1000 / 100 = 10 units
+    w.update("X", 100.0)
     assert w.position("X") == pytest.approx(10.0)
     # equity is still 1000; one set flips all-in short -> -10 units
-    order = w.set("X", "sell", ta.Size.value_frac(1.0))
-    assert order.units == pytest.approx(20.0)
+    w.set("X", "sell", ta.Size.value_frac(1.0))
+    w.update("X", 100.0)
+    assert w.orders()[-1].units == pytest.approx(20.0)
     assert w.position("X") == pytest.approx(-10.0)
 
 
 def test_wallet_close_and_equity():
     w = ta.PaperWallet(1_000.0)
     w.update("X", 100.0)
-    w.set("X", "buy", 4.0)  # funds 600, +4 units
+    w.set("X", "buy", 4.0)
+    w.update("X", 100.0)  # fill: funds 600, +4 units
     w.update("X", 120.0)
     assert w.equity() == pytest.approx(600.0 + 4.0 * 120.0)
     w.close("X")
+    w.update("X", 120.0)  # fills the close at the open 120
     assert w.is_flat()
     assert w.funds == pytest.approx(1_080.0)
     assert [o.side for o in w.orders()] == ["buy", "sell"]
@@ -493,20 +517,25 @@ def test_wallet_rejects_bad_side():
 
 def test_wallet_flags_impossible_movements():
     w = ta.PaperWallet(100.0)
-    # No price fed yet -> can't value or book.
+    # The immediate primitive flags eagerly. No price fed yet -> can't book.
     with pytest.raises(ValueError):
-        w.set("X", "buy", 1.0)
+        w.set_position_at("X", 1.0, 50.0)
     # A buy beyond available funds, with no margin.
     w.update("X", 50.0)
     with pytest.raises(ValueError):
-        w.set("X", "buy", 3.0)  # 150 > 100
+        w.set_position_at("X", 3.0, 50.0)  # 150 > 100
+    # A queued market buy beyond funds simply never fills (no exception).
+    w.set("X", "buy", 3.0)
+    w.update("X", 50.0)
+    assert w.is_flat()
 
 
 def test_order_carries_fill_price():
     w = ta.PaperWallet(1_000.0)
     w.update("X", 100.0)
-    order = w.set_position("X", 2.0)
-    assert order.price == pytest.approx(100.0)  # filled at the fed close
+    w.set_position("X", 2.0)  # queued
+    w.update("X", 100.0)  # fills at this bar's open
+    assert w.orders()[-1].price == pytest.approx(100.0)
 
 
 def test_update_accepts_a_candle_and_fills_at_exact_price():

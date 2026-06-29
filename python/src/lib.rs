@@ -1136,11 +1136,14 @@ impl PyOrder {
 /// wallet is otherwise market-agnostic. `set(symbol, side, size)` targets an
 /// absolute position (an opposite-side `set` reverses; `Size.value_frac(1.0)` is
 /// all-in), `set_position(symbol, target)` drives to an absolute unit count, and
-/// `close` flattens — all filling at the bar's `close`. The `*_at(…, price)`
-/// variants fill at an explicit price within the bar's range (for exact stop /
-/// take-profit fills). Each returns the resulting `Order`, or `None` if nothing
-/// traded, and raises `ValueError` if the movement is impossible (no/zero price,
-/// a fill outside the bar's range, or a buy beyond available funds).
+/// `close` flattens. These are **market orders**: they queue and fill on the next
+/// `update`, at that bar's `open` (so a backtest never fills on the same bar whose
+/// `close` triggered the signal), returning `None` — the filled `Order` shows up
+/// in `orders()` once that next `update` runs. The `*_at(…, price)` variants fill
+/// immediately at an explicit price within the bar's range (for exact stop /
+/// take-profit fills), returning the resulting `Order` or `None` if nothing
+/// traded, and raise `ValueError` if that fill is impossible (no/zero price, a
+/// price outside the bar's range, or a buy beyond available funds).
 #[pyclass(name = "PaperWallet")]
 struct PyWallet {
     inner: PaperWallet<String>,
@@ -1221,8 +1224,9 @@ impl PyWallet {
         Ok(())
     }
 
-    /// Drive the position in `symbol` to `target` signed units, filling at the
-    /// symbol's last-fed `close`.
+    /// Queue a market order driving `symbol` to `target` signed units; it fills on
+    /// the next `update`, at that bar's `open`. Returns `None` (the fill is booked
+    /// then, not here).
     fn set_position(&mut self, symbol: String, target: f64) -> PyResult<Option<PyOrder>> {
         wrap_order(self.inner.set_position(Units {
             symbol,
@@ -1248,7 +1252,9 @@ impl PyWallet {
         ))
     }
 
-    /// Set the target position in `symbol` to `side` `size`.
+    /// Queue a market order targeting `side` `size` of `symbol`; it fills on the
+    /// next `update`, at that bar's `open` (where the `size` is resolved, so an
+    /// all-in stays exact). Returns `None` — the fill is booked then.
     fn set(
         &mut self,
         symbol: String,
@@ -1261,7 +1267,8 @@ impl PyWallet {
         )
     }
 
-    /// Flatten `symbol`, filling at the last-fed `close`.
+    /// Queue a market order flattening `symbol`; it fills on the next `update`, at
+    /// that bar's `open`. Returns `None` — the fill is booked then.
     fn close(&mut self, symbol: String) -> PyResult<Option<PyOrder>> {
         wrap_order(self.inner.close(symbol))
     }

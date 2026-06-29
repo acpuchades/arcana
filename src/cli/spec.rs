@@ -799,8 +799,10 @@ mod tests {
             StrategySpec::from_text_with_params(yaml, &std::collections::HashMap::new()).unwrap();
         let mut strat = spec.build();
         let mut w = PaperWallet::new(1_000.0);
-        // Bar 1 enters at 100; bar 2 trades down through 90 (low 88).
+        // Bar 1 signals; the entry fills at bar 2's open (100), anchoring the stop
+        // at 90; bar 3 trades down through 90 (low 88), opening above it.
         for c in [
+            Candle::new(100.0, 100.0, 100.0, 100.0, 0.0),
             Candle::new(100.0, 100.0, 100.0, 100.0, 0.0),
             Candle::new(95.0, 96.0, 88.0, 89.0, 0.0),
         ] {
