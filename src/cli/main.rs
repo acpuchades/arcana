@@ -108,6 +108,13 @@ struct RunArgs {
     #[arg(long, value_name = "N")]
     bars_per_year: Option<f64>,
 
+    /// Annualized risk-free rate as a fraction (e.g. `0.045` = 4.5% p.a.).
+    /// Subtracted from the annualized mean return before Sharpe/Sortino/UPI,
+    /// and used as the per-bar threshold for Omega. Default 0 — the
+    /// pre-adjusted excess-return semantics of the original release.
+    #[arg(long, value_name = "RATE", default_value_t = 0.0)]
+    risk_free_rate: f64,
+
     /// Suppress all console output (the result files are still written).
     #[arg(short, long)]
     quiet: bool,
@@ -140,6 +147,7 @@ fn run(args: RunArgs) -> Result<()> {
         params: &params_label,
         seed: args.seed,
         bars_per_year,
+        risk_free_rate: args.risk_free_rate,
         quiet: args.quiet,
     };
     backtest::run(&spec, &frame, &opts)?;

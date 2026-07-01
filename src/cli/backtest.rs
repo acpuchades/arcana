@@ -50,6 +50,10 @@ pub struct RunOptions<'a> {
     pub seed: u64,
     /// Bars per year used to annualize per-bar return moments in `metrics.yml`.
     pub bars_per_year: Real,
+    /// Annualized risk-free rate as a fraction (e.g. `0.045` = 4.5% p.a.).
+    /// Subtracted from annualized returns before Sharpe/Sortino/UPI and used
+    /// as the per-bar threshold for Omega.
+    pub risk_free_rate: Real,
     /// Suppress all console output (the result files are still written).
     pub quiet: bool,
 }
@@ -176,7 +180,13 @@ pub fn run(spec: &StrategySpec, frame: &DataFrame, opts: &RunOptions) -> Result<
     // Reduce the recorded blotter + equity curve to a metrics document and
     // persist it alongside the CSVs, then echo the top-line ratios in a
     // dedicated console block.
-    let m = metrics::compute(&equity_curve, &booked_fills, opts.cash, opts.bars_per_year);
+    let m = metrics::compute(
+        &equity_curve,
+        &booked_fills,
+        opts.cash,
+        opts.bars_per_year,
+        opts.risk_free_rate,
+    );
     metrics::write_yaml(&m, &opts.out_dir.join("metrics.yml"))?;
 
     let finished = SystemTime::now();
@@ -251,8 +261,8 @@ fn print_result_block(opts: &RunOptions, s: &Summary, started: SystemTime, finis
 
 /// The "metrics" block: a compact summary of `metrics.yml`'s headline figures.
 /// Only the most-referenced ones are surfaced here (annualized return + vol,
-/// Sharpe, Sortino, max drawdown, trade count + win rate + profit factor);
-/// the file itself carries the full set.
+/// Sharpe/Sortino/Omega, max drawdown, exposure, trade count + win rate +
+/// profit factor); the file itself carries the full set.
 fn print_metrics_block(m: &metrics::Metrics) {
     println!("\n{}", style::bold("metrics"));
     print_field(
@@ -264,6 +274,7 @@ fn print_metrics_block(m: &metrics::Metrics) {
     );
     print_field("sharpe", &format_ratio(m.risk_adjusted.sharpe));
     print_field("sortino", &format_ratio(m.risk_adjusted.sortino));
+    print_field("omega", &format_ratio(m.risk_adjusted.omega));
     print_field(
         "max_dd",
         &format!(
@@ -271,6 +282,7 @@ fn print_metrics_block(m: &metrics::Metrics) {
             m.drawdown.max_pct, m.drawdown.max_duration_bars
         ),
     );
+    print_field("exposure", &format!("{:.1}%", m.trades.exposure_pct));
     print_field(
         "trades",
         &format!(
