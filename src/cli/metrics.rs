@@ -248,10 +248,15 @@ pub fn compute(
 
     let bar_returns = per_bar_returns(equity_curve, cash);
     let sorted_returns = sorted_asc(&bar_returns);
+    let rf_per_bar = if bars_per_year > 0.0 {
+        risk_free_rate / bars_per_year
+    } else {
+        0.0
+    };
     let (mean, stddev) = mean_stddev(&bar_returns);
-    let downside = downside_stddev(&bar_returns);
-    let skewness = skewness(&bar_returns, mean, stddev);
-    let kurtosis = excess_kurtosis(&bar_returns, mean, stddev);
+    let downside = downside_stddev(&bar_returns, rf_per_bar);
+    let skewness = skewness(&bar_returns, mean);
+    let kurtosis = excess_kurtosis(&bar_returns, mean);
 
     let total = if cash != 0.0 {
         (final_equity - cash) / cash
@@ -272,11 +277,6 @@ pub fn compute(
     let calmar = cagr_frac.and_then(|c| safe_div(c, dd.max));
     let recovery_factor = safe_div(total, dd.max);
 
-    let rf_per_bar = if bars_per_year > 0.0 {
-        risk_free_rate / bars_per_year
-    } else {
-        0.0
-    };
     let omega = compute_omega(&bar_returns, rf_per_bar);
     let ulcer = ulcer_index(equity_curve);
     let upi = cagr_frac.and_then(|c| safe_div(c - risk_free_rate, ulcer));
@@ -378,48 +378,71 @@ fn per_bar_returns(equity: &[Real], cash: Real) -> Vec<Real> {
     out
 }
 
-/// Population mean and stddev of a sample. Empty input → `(0, 0)`; a
-/// single-sample stddev is `0` by construction.
+/// Sample mean and sample (Bessel-corrected, `ddof=1`) stddev of `xs`. The
+/// `ddof=1` divisor matches the industry convention used by empyrical /
+/// pyfolio / quantstats and Excel `STDEV`, so `stddev_bar`, annualized
+/// volatility and Sharpe read identically to those references. Empty input
+/// → `(0, 0)`; a single-sample sample stddev is undefined and returned as
+/// `0`.
 fn mean_stddev(xs: &[Real]) -> (Real, Real) {
-    if xs.is_empty() {
+    let n = xs.len();
+    if n == 0 {
         return (0.0, 0.0);
     }
-    let n = xs.len() as Real;
-    let mean = xs.iter().sum::<Real>() / n;
-    let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<Real>() / n;
+    let mean = xs.iter().sum::<Real>() / n as Real;
+    if n < 2 {
+        return (mean, 0.0);
+    }
+    let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<Real>() / (n - 1) as Real;
     (mean, var.sqrt())
 }
 
-/// Downside stddev (Sortino denominator): `sqrt(mean(min(0, r)^2))`. Positive
-/// bars are floored to zero, so a run with no losing bar returns `0`.
-fn downside_stddev(xs: &[Real]) -> Real {
+/// Downside stddev (Sortino denominator) with `threshold` as the Minimum
+/// Acceptable Return: `sqrt(mean(min(0, r − threshold)^2))`. Uses an `n`
+/// divisor (not `n − 1`) so it matches empyrical's `downside_risk` exactly
+/// — a run with every bar clearing the threshold returns `0`.
+fn downside_stddev(xs: &[Real], threshold: Real) -> Real {
     if xs.is_empty() {
         return 0.0;
     }
     let n = xs.len() as Real;
-    let sum_sq = xs.iter().map(|x| x.min(0.0).powi(2)).sum::<Real>();
+    let sum_sq = xs
+        .iter()
+        .map(|x| (x - threshold).min(0.0).powi(2))
+        .sum::<Real>();
     (sum_sq / n).sqrt()
 }
 
-/// Sample skewness (third standardized moment). `None` when stddev is zero.
-fn skewness(xs: &[Real], mean: Real, stddev: Real) -> Option<Real> {
-    if xs.is_empty() || stddev == 0.0 {
+/// Biased (population) skewness — the classical `g1 = m3 / m2^(3/2)` over
+/// central moments with an `n` divisor. Matches `scipy.stats.skew(bias=True)`.
+/// `None` when the second moment is zero.
+fn skewness(xs: &[Real], mean: Real) -> Option<Real> {
+    if xs.is_empty() {
         return None;
     }
     let n = xs.len() as Real;
+    let m2 = xs.iter().map(|x| (x - mean).powi(2)).sum::<Real>() / n;
+    if m2 == 0.0 {
+        return None;
+    }
     let m3 = xs.iter().map(|x| (x - mean).powi(3)).sum::<Real>() / n;
-    Some(m3 / stddev.powi(3))
+    Some(m3 / m2.powf(1.5))
 }
 
-/// Excess kurtosis (fourth standardized moment minus 3, so a normal
-/// distribution reads 0). `None` when stddev is zero.
-fn excess_kurtosis(xs: &[Real], mean: Real, stddev: Real) -> Option<Real> {
-    if xs.is_empty() || stddev == 0.0 {
+/// Biased excess kurtosis — `g2 = m4 / m2^2 − 3`, so a normal distribution
+/// reads 0. Matches `scipy.stats.kurtosis(bias=True, fisher=True)`. `None`
+/// when the second moment is zero.
+fn excess_kurtosis(xs: &[Real], mean: Real) -> Option<Real> {
+    if xs.is_empty() {
         return None;
     }
     let n = xs.len() as Real;
+    let m2 = xs.iter().map(|x| (x - mean).powi(2)).sum::<Real>() / n;
+    if m2 == 0.0 {
+        return None;
+    }
     let m4 = xs.iter().map(|x| (x - mean).powi(4)).sum::<Real>() / n;
-    Some(m4 / stddev.powi(4) - 3.0)
+    Some(m4 / m2.powi(2) - 3.0)
 }
 
 /// Sorted-ascending copy, `NaN`-tolerant (`NaN`s are treated as equal so the
@@ -947,13 +970,13 @@ mod tests {
     #[test]
     fn skew_kurt_normalish_returns() {
         let xs = vec![-1.0, 0.0, 1.0]; // symmetric → skew ≈ 0
-        let (mean, sd) = mean_stddev(&xs);
-        assert!(skewness(&xs, mean, sd).unwrap().abs() < 1e-9);
-        // Constant sample → stddev 0 → skew/kurt undefined.
+        let (mean, _) = mean_stddev(&xs);
+        assert!(skewness(&xs, mean).unwrap().abs() < 1e-9);
+        // Constant sample → m2 = 0 → skew/kurt undefined.
         let flat = vec![1.0; 5];
-        let (m, s) = mean_stddev(&flat);
-        assert!(skewness(&flat, m, s).is_none());
-        assert!(excess_kurtosis(&flat, m, s).is_none());
+        let (m, _) = mean_stddev(&flat);
+        assert!(skewness(&flat, m).is_none());
+        assert!(excess_kurtosis(&flat, m).is_none());
     }
 
     #[test]
