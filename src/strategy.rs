@@ -480,6 +480,7 @@ pub struct PaperWallet<Sym> {
     pending: HashMap<Sym, Pending>,
     protective: HashMap<Sym, Protective>,
     funds: Real,
+    initial_funds: Real,
     blotter: Vec<Order<Sym>>,
     next_id: u64,
 }
@@ -493,6 +494,7 @@ impl<Sym> PaperWallet<Sym> {
             pending: HashMap::new(),
             protective: HashMap::new(),
             funds,
+            initial_funds: funds,
             blotter: Vec::new(),
             next_id: 0,
         }
@@ -508,9 +510,17 @@ impl<Sym> PaperWallet<Sym> {
         &self.blotter
     }
 
-    /// Drop the blotter history (positions, prices and funds are untouched).
-    pub fn clear_blotter(&mut self) {
+    /// Restore the wallet to its freshly-constructed state — the seed `funds`
+    /// it was built with, no positions, no fed prices, no pending or resting
+    /// orders, and an empty blotter. Lets one wallet drive successive runs.
+    pub fn reset(&mut self) {
+        self.positions.clear();
+        self.bars.clear();
+        self.pending.clear();
+        self.protective.clear();
         self.blotter.clear();
+        self.funds = self.initial_funds;
+        self.next_id = 0;
     }
 
     /// Mint the next unique [`OrderId`].

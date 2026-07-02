@@ -1208,9 +1208,11 @@ impl PyWallet {
             .collect()
     }
 
-    /// Forget the blotter history (positions, prices and funds are untouched).
-    fn clear_blotter(&mut self) {
-        self.inner.clear_blotter();
+    /// Restore the wallet to its freshly-constructed state — the seed funds it
+    /// was built with, no positions, no fed prices, no pending or resting
+    /// orders, and an empty blotter.
+    fn reset(&mut self) {
+        self.inner.reset();
     }
 
     /// Mark-to-market equity: funds plus each position valued at its fed price.
