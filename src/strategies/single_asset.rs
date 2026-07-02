@@ -1,7 +1,7 @@
 //! [`SingleAssetStrategy`]: the generic, all-in skeleton every other strategy in
 //! this catalogue specialises.
 
-use crate::indicators::{Const, Position, Value};
+use crate::indicators::{Const, Position};
 use crate::prelude::*;
 
 /// A boxed price-level source — the value a stop-loss / take-profit compares
@@ -52,19 +52,15 @@ fn level_value(level: &Option<Level>) -> Option<Real> {
 /// ## Protective stops
 ///
 /// A stop is a **price level** — an ordinary indicator expression over the
-/// strategy's [`Position`] (its entry price and the extremes since entry). The
-/// percentage sugar covers the common cases:
+/// strategy's [`Position`] (its entry price and the extremes since entry). Grab
+/// the [`position`](Self::position) and build the expression
+/// (`position.entry()` / `position.peak()` / `position.trough()`), then attach
+/// it with [`long_stop_loss`](Self::long_stop_loss) /
+/// [`short_stop_loss`](Self::short_stop_loss) (and the `take_profit` twins). A
+/// fixed 5% long stop is `position.entry().mul(Value::new(0.95))`; a 5%
+/// trailing long stop is `position.peak().mul(Value::new(0.95))`; an ATR stop
+/// is `position.entry().sub(Atr::new(14).mul(Value::new(2.0)))`.
 ///
-/// * [`stop_loss_pct(0.05)`](Self::stop_loss_pct) — exit 5% adverse to entry;
-/// * [`take_profit_pct(0.10)`](Self::take_profit_pct) — exit 10% favourable;
-/// * [`trailing_stop_pct(0.05)`](Self::trailing_stop_pct) — exit 5% off the best
-///   price reached since entry.
-///
-/// Each is symmetric (applies to long and short alike). For a custom level —
-/// e.g. an ATR stop — grab the [`position`](Self::position) and build the
-/// expression (`position.entry()` / `position.peak()` / `position.trough()`),
-/// then attach it with [`long_stop_loss`](Self::long_stop_loss) /
-/// [`short_stop_loss`](Self::short_stop_loss) (and the `take_profit` twins).
 /// These aren't intra-bar fills the strategy computes: each bar the strategy
 /// **rests the level as a stop / take-profit order** on the wallet
 /// ([`set_stop`](crate::Wallet::set_stop) / [`set_take_profit`](crate::Wallet::set_take_profit),
@@ -75,16 +71,19 @@ fn level_value(level: &Option<Level>) -> Option<Real> {
 ///
 /// ```
 /// use fugazi::prelude::*;
-/// use fugazi::indicators::{Current, Sma};
+/// use fugazi::indicators::{Current, Sma, Value};
 /// use fugazi::strategies::SingleAssetStrategy;
 ///
-/// // A golden/death-cross that reverses long↔short, with a 5% trailing stop.
+/// // A golden/death-cross that reverses long↔short, with a 5% trailing stop
+/// // on each side (long trails the peak, short trails the trough).
 /// let cross_up = || Sma::new(Current::close(), 5).crosses_above(Sma::new(Current::close(), 20));
 /// let cross_dn = || Sma::new(Current::close(), 5).crosses_below(Sma::new(Current::close(), 20));
 /// let strat = SingleAssetStrategy::new("BTC")
 ///     .long_on(cross_up(), cross_dn())
-///     .short_on(cross_dn(), cross_up())
-///     .trailing_stop_pct(0.05);
+///     .short_on(cross_dn(), cross_up());
+/// let long_stop = strat.position().peak().mul(Value::new(0.95));
+/// let short_stop = strat.position().trough().mul(Value::new(1.05));
+/// let strat = strat.long_stop_loss(long_stop).short_stop_loss(short_stop);
 /// # let _ = strat;
 /// ```
 ///
@@ -198,30 +197,6 @@ impl<Sym> SingleAssetStrategy<Sym> {
         self
     }
 
-    /// A fixed stop-loss `frac` away from entry, both sides (long below entry,
-    /// short above).
-    pub fn stop_loss_pct(self, frac: Real) -> Self {
-        let position = self.position();
-        self.long_stop_loss(position.entry().mul(Value::new(1.0 - frac)))
-            .short_stop_loss(position.entry().mul(Value::new(1.0 + frac)))
-    }
-
-    /// A fixed take-profit `frac` away from entry, both sides (long above entry,
-    /// short below).
-    pub fn take_profit_pct(self, frac: Real) -> Self {
-        let position = self.position();
-        self.long_take_profit(position.entry().mul(Value::new(1.0 + frac)))
-            .short_take_profit(position.entry().mul(Value::new(1.0 - frac)))
-    }
-
-    /// A trailing stop `frac` off the best price reached since entry, both sides
-    /// (off the running high for a long, the running low for a short). Replaces
-    /// the side's stop-loss level.
-    pub fn trailing_stop_pct(self, frac: Real) -> Self {
-        let position = self.position();
-        self.long_stop_loss(position.peak().mul(Value::new(1.0 - frac)))
-            .short_stop_loss(position.trough().mul(Value::new(1.0 + frac)))
-    }
 }
 
 impl<Sym: Clone + PartialEq> Strategy for SingleAssetStrategy<Sym> {
@@ -325,6 +300,7 @@ impl<Sym: Clone + PartialEq> Strategy for SingleAssetStrategy<Sym> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indicators::Value;
     use crate::strategy::PaperWallet;
 
     /// Drive `strat` over `candles`, feeding each bar to the wallet first and
@@ -348,11 +324,19 @@ mod tests {
         Candle::new(price, price, price, price, 0.0)
     }
 
+    /// Buy-and-hold with a fixed long stop at `1 - frac` of the entry price —
+    /// the general-form equivalent of the removed `stop_loss_pct` sugar.
+    fn buy_and_hold_with_stop(frac: Real) -> SingleAssetStrategy<&'static str> {
+        let strat = SingleAssetStrategy::buy_and_hold("X");
+        let level = strat.position().entry().mul(Value::new(1.0 - frac));
+        strat.long_stop_loss(level)
+    }
+
     #[test]
     fn long_stop_loss_fills_at_the_level() {
         // Buy-and-hold, 10% stop. The first bar signals; the entry fills at the
         // *next* bar's open (100), anchoring the stop at 90.
-        let mut strat = SingleAssetStrategy::buy_and_hold("X").stop_loss_pct(0.10);
+        let mut strat = buy_and_hold_with_stop(0.10);
         // The third bar trades down through 90 (low 88) but opens above it.
         let w = run(
             &mut strat,
@@ -372,7 +356,7 @@ mod tests {
     fn long_stop_gaps_to_the_open() {
         // Same stop at 90, but the bar gaps down opening at 85, already below it,
         // so the fill is the open, not the (unreachable) stop level.
-        let mut strat = SingleAssetStrategy::buy_and_hold("X").stop_loss_pct(0.10);
+        let mut strat = buy_and_hold_with_stop(0.10);
         let w = run(
             &mut strat,
             &[
@@ -388,13 +372,16 @@ mod tests {
 
     #[test]
     fn long_trailing_stop_ratchets_up() {
-        // 10% trailing stop. The entry fills at the second bar's open (100); the
-        // third bar rallies to a high of 130, so the peak reflects 130 from the
-        // fourth bar's update, lifting the resting stop to 117. Because a resting
-        // order can only be *submitted* that bar and matched the *next* one, the
-        // stop fills a bar later (the accepted trailing lag): the fifth bar opens
-        // above 117 and trades down through it, filling at the level.
-        let mut strat = SingleAssetStrategy::buy_and_hold("X").trailing_stop_pct(0.10);
+        // 10% trailing stop, built off the position's running peak. The entry
+        // fills at the second bar's open (100); the third bar rallies to a high
+        // of 130, so the peak reflects 130 from the fourth bar's update, lifting
+        // the resting stop to 117. Because a resting order can only be
+        // *submitted* that bar and matched the *next* one, the stop fills a bar
+        // later (the accepted trailing lag): the fifth bar opens above 117 and
+        // trades down through it, filling at the level.
+        let strat = SingleAssetStrategy::buy_and_hold("X");
+        let level = strat.position().peak().mul(Value::new(0.90));
+        let mut strat = strat.long_stop_loss(level);
         let w = run(
             &mut strat,
             &[
@@ -414,7 +401,7 @@ mod tests {
 
     #[test]
     fn no_stop_out_when_price_holds() {
-        let mut strat = SingleAssetStrategy::buy_and_hold("X").stop_loss_pct(0.10);
+        let mut strat = buy_and_hold_with_stop(0.10);
         // Entry fills at the second bar's open (95); a 10% stop sits at 85.5, and
         // price never reaches it, so it stays long the whole way.
         let w = run(
