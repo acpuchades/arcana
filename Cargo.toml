@@ -16,12 +16,25 @@ path = "src/lib.rs"
 # The `fugazi` binary is the command-line backtester: it loads a strategy.yml,
 # assembles candle data from one or more --series, and runs it through a paper
 # wallet (see `src/cli/`). Most of the dependencies below are pulled in only to
-# build the CLI binary; the exceptions are `reqwest`/`tokio`/`serde`/`serde_json`/
-# `time`/`thiserror`, which the library uses for the `sources` module (remote
-# candle providers such as Binance).
+# build the CLI binary; the exceptions are `serde`/`serde_json` (library uses
+# them for indicator/signal serialisation in the CLI) and the deps gated behind
+# the `sources` feature (`reqwest`/`tokio`/`time`/`thiserror`), which the
+# library uses for the `sources` module (remote candle providers like Binance).
+# The CLI binary transitively uses `fugazi::sources` for its `get` subcommand,
+# so the binary is only built when the `sources` feature is enabled — which it
+# is by default.
 [[bin]]
 name = "fugazi"
 path = "src/cli/main.rs"
+required-features = ["sources"]
+
+# The `sources` feature pulls in the async HTTP stack the remote candle
+# providers (`fugazi::sources`) rely on. Default-on so `cargo build` builds
+# the CLI unchanged; a library consumer that only wants the pure
+# indicator/backtest core can opt out with `default-features = false`.
+[features]
+default = ["sources"]
+sources = ["dep:reqwest", "dep:tokio", "dep:time", "dep:thiserror"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -33,10 +46,10 @@ csv = "1"
 anyhow = "1"
 rayon = "1"
 plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series", "area_series", "ttf"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
-time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
-thiserror = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"], optional = true }
+time = { version = "0.3", features = ["formatting", "parsing", "macros"], optional = true }
+thiserror = { version = "1", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"

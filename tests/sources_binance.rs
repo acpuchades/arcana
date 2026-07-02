@@ -1,3 +1,4 @@
+#![cfg(feature = "sources")]
 //! Integration test for the Binance `CandleSource` implementation.
 //!
 //! Spins up a `wiremock` server on a random port, stubs `/api/v3/klines` with
