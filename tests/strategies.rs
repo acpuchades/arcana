@@ -176,7 +176,10 @@ fn rsi_reversal_buys_the_dip_and_exits_flat() {
 
     let wallet = run(rsi_reversal(SYMBOL, 5, 30.0, 50.0), &candles);
     assert!(!wallet.orders().is_empty(), "should have bought the dip");
-    assert!(wallet.is_flat(), "should have exited on the recovery");
+    assert!(
+        wallet.positions().next().is_none(),
+        "should have exited on the recovery"
+    );
     let sides: Vec<Side> = wallet.orders().iter().map(|o| o.side).collect();
     assert_eq!(sides.first(), Some(&Side::Buy));
     assert_eq!(sides.last(), Some(&Side::Sell));

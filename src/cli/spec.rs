@@ -813,7 +813,7 @@ mod tests {
             strat.update(c);
             strat.trade(&mut w);
         }
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
         assert_eq!(w.orders().last().unwrap().price, 90.0);
     }
 

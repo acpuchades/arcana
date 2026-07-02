@@ -500,11 +500,6 @@ impl<Sym> PaperWallet<Sym> {
         }
     }
 
-    /// Whether no positions are currently held.
-    pub fn is_flat(&self) -> bool {
-        self.positions.is_empty()
-    }
-
     /// Every order executed so far, in order (the trade blotter).
     pub fn orders(&self) -> &[Order<Sym>] {
         &self.blotter
@@ -828,7 +823,7 @@ mod tests {
         assert!(matches!(w.close("X"), Ok(Ack::Working(_)))); // queued
         w.update("X", bar(110.0)); // fills the close at the open 110
         assert_fill(w.orders().last().unwrap(), Side::Sell, 10.0, 110.0, OrderKind::Market);
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
         assert_eq!(w.funds().0, 1_100.0);
     }
 
@@ -921,7 +916,7 @@ mod tests {
         // A queued buy beyond funds simply never fills (the error is swallowed).
         w.set("X", Side::Buy, Size::units(3.0)).unwrap();
         w.update("X", bar(50.0));
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
         // A short sale credits cash, so selling is always feasible.
         w.set("X", Side::Sell, Size::units(3.0)).unwrap();
         w.update("X", bar(50.0));
@@ -939,7 +934,7 @@ mod tests {
         // A queued order against a zero open likewise never fills.
         w.set("X", Side::Buy, Size::value_frac(1.0)).unwrap();
         w.update("X", bar(0.0));
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
     }
 
     #[test]
@@ -964,7 +959,7 @@ mod tests {
         let fills = w.update("X", Candle::new(95.0, 96.0, 88.0, 89.0, 0.0));
         assert_eq!(fills.len(), 1);
         assert_fill(&fills[0], Side::Sell, 1.0, 90.0, OrderKind::Stop);
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
     }
 
     #[test]
@@ -977,7 +972,7 @@ mod tests {
         // Gaps down opening at 85, already below the stop -> fills at the open.
         let fills = w.update("X", Candle::new(85.0, 86.0, 84.0, 84.0, 0.0));
         assert_fill(&fills[0], Side::Sell, 1.0, 85.0, OrderKind::Stop);
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
     }
 
     #[test]
@@ -990,7 +985,7 @@ mod tests {
         w.set_take_profit("X", Reference(90.0)).unwrap();
         let fills = w.update("X", Candle::new(95.0, 96.0, 88.0, 92.0, 0.0));
         assert_fill(&fills[0], Side::Buy, 1.0, 90.0, OrderKind::TakeProfit);
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
     }
 
     #[test]
@@ -1006,7 +1001,7 @@ mod tests {
         let fills = w.update("X", Candle::new(100.0, 111.0, 89.0, 105.0, 0.0));
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].kind, OrderKind::Stop);
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
         // No leftover leg: a later bar does nothing.
         let more = w.update("X", Candle::new(105.0, 112.0, 88.0, 100.0, 0.0));
         assert!(more.is_empty());
@@ -1022,7 +1017,7 @@ mod tests {
         // Flatten with a market close; the fill drops the resting stop.
         w.close("X").unwrap();
         w.update("X", bar(100.0));
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
         // The old stop no longer fires even if price revisits 90.
         let fills = w.update("X", Candle::new(95.0, 96.0, 88.0, 89.0, 0.0));
         assert!(fills.is_empty());
@@ -1038,7 +1033,7 @@ mod tests {
         w.cancel_protective(&"X").unwrap();
         let fills = w.update("X", Candle::new(95.0, 96.0, 88.0, 89.0, 0.0));
         assert!(fills.is_empty());
-        assert!(!w.is_flat());
+        assert!(w.positions().next().is_some());
     }
 
     /// A self-contained strategy type: long the golden cross, flat the death
@@ -1106,7 +1101,7 @@ mod tests {
         w.update("X", bar(7.0));
         // It entered and later exited at least once; ends flat with funds back.
         assert!(!w.orders().is_empty());
-        assert!(w.is_flat());
+        assert!(w.positions().next().is_none());
         assert!(w.funds().0 > 0.0);
     }
 

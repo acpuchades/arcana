@@ -479,7 +479,7 @@ def test_wallet_close_and_equity():
     assert w.equity() == pytest.approx(600.0 + 4.0 * 120.0)
     w.close("X")
     w.update("X", 120.0)  # fills the close at the open 120
-    assert w.is_flat()
+    assert not w.positions()
     assert w.funds == pytest.approx(1_080.0)
     assert [o.side for o in w.orders()] == ["buy", "sell"]
 
@@ -521,7 +521,7 @@ def test_impossible_market_orders_never_fill():
     # A queued market buy beyond funds (3 * 50 = 150 > 100) simply never fills.
     w.set("X", "buy", 3.0)
     w.update("X", 50.0)
-    assert w.is_flat()
+    assert not w.positions()
     # A short sale credits cash, so selling is always feasible.
     w.set("X", "sell", 3.0)
     w.update("X", 50.0)
@@ -559,7 +559,7 @@ def test_resting_stop_fills_at_the_level():
     assert fills[0].side == "sell"
     assert fills[0].price == pytest.approx(90.0)
     assert fills[0].kind == "stop"
-    assert w.is_flat()
+    assert not w.positions()
 
 
 def test_resting_stop_gaps_to_the_open():
@@ -572,7 +572,7 @@ def test_resting_stop_gaps_to_the_open():
     fills = w.update("X", ta.Candle(85.0, 86.0, 84.0, 84.0, 0.0))
     assert fills[0].price == pytest.approx(85.0)
     assert fills[0].kind == "stop"
-    assert w.is_flat()
+    assert not w.positions()
     # A cancelled bracket no longer fires.
     w.set("X", "buy", 1.0)
     w.update("X", 100.0)

@@ -1174,11 +1174,6 @@ impl PyWallet {
         self.inner.funds().0
     }
 
-    /// Whether no positions are currently held.
-    fn is_flat(&self) -> bool {
-        self.inner.is_flat()
-    }
-
     /// The signed position in `symbol` (positive long, negative short).
     fn position(&self, symbol: &str) -> f64 {
         self.inner.position(&symbol.to_string()).amount
