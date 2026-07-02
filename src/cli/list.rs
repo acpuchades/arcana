@@ -1,6 +1,6 @@
 //! `fugazi list` — printed catalogue of what the CLI knows about.
 //!
-//! Two things a user might want to enumerate:
+//! Three things a user might want to enumerate:
 //!
 //! * `fugazi list indicators` (the default) — every `!tag` [`crate::spec`]
 //!   accepts: real-valued sources, boolean signals, and the `!param`
@@ -10,25 +10,36 @@
 //! * `fugazi list sources` — every remote candle provider the `get` subcommand
 //!   can fetch from (`binance:BTCUSDT[1d]`, `yfinance:SPY[1d]`, …), rendered
 //!   from the same table `get` dispatches against.
+//! * `fugazi list tickers <provider>` — every symbol the given provider
+//!   currently exposes (backed by a real HTTP call — Binance advertises its
+//!   spot vocabulary through `/api/v3/exchangeInfo`; Yahoo Finance and most
+//!   retail equity APIs have no such endpoint and surface an "unsupported"
+//!   error).
 
 use std::io::{self, Write};
 
-use anyhow::Result;
-use clap::ValueEnum;
+use anyhow::{Context, Result};
+use clap::Subcommand;
+use tokio::runtime::Builder as RuntimeBuilder;
 
-use super::get::KNOWN_PROVIDERS;
+use super::get::{KNOWN_PROVIDERS, tickers_of};
 
-/// What `fugazi list` should print. Mirrors the CLI's positional argument;
-/// `Indicators` is the default so `fugazi list` (with no argument) keeps the
-/// original behaviour.
-#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[value(rename_all = "lower")]
-pub enum ListKind {
+/// What `fugazi list` should print. Nested-subcommand shape so the ticker form
+/// can carry its own required positional (`fugazi list tickers <provider>`)
+/// without leaking a "PROVIDER — required when kind = tickers" caveat into the
+/// `indicators` / `sources` forms.
+#[derive(Subcommand, Clone, Debug)]
+pub enum ListCmd {
     /// The strategy-YAML tag catalogue (sources, signals, `!param`).
-    #[default]
     Indicators,
     /// The remote candle providers the `get` subcommand can fetch from.
     Sources,
+    /// Every symbol the given provider currently exposes.
+    Tickers {
+        /// The provider (e.g. `binance`). See `fugazi list sources`.
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+    },
 }
 
 /// One YAML tag: its name, argument shape and a one-line description.
@@ -243,18 +254,36 @@ const PLACEHOLDERS: Section = Section {
     ],
 };
 
-pub fn run(kind: ListKind) -> Result<()> {
+pub fn run(cmd: ListCmd) -> Result<()> {
     let out = io::stdout();
     let mut out = out.lock();
-    match kind {
-        ListKind::Indicators => {
+    match cmd {
+        ListCmd::Indicators => {
             write_all(&mut out, &SOURCES)?;
             writeln!(out)?;
             write_all(&mut out, &SIGNALS)?;
             writeln!(out)?;
             write_all(&mut out, &PLACEHOLDERS)?;
         }
-        ListKind::Sources => write_sources(&mut out, KNOWN_PROVIDERS)?,
+        ListCmd::Sources => write_sources(&mut out, KNOWN_PROVIDERS)?,
+        ListCmd::Tickers { provider } => write_tickers(&mut out, &provider)?,
+    }
+    Ok(())
+}
+
+/// Fetch and print the provider's ticker list, one symbol per line. Spins up a
+/// short-lived tokio runtime — like `fugazi get` — since the underlying
+/// [`crate::sources::CandleSource::tickers`] method is async.
+fn write_tickers<W: Write>(w: &mut W, provider: &str) -> Result<()> {
+    let rt = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building tokio runtime")?;
+    let tickers = rt
+        .block_on(tickers_of(provider))
+        .with_context(|| format!("listing tickers for {provider}"))?;
+    for t in &tickers {
+        writeln!(w, "{t}")?;
     }
     Ok(())
 }
@@ -350,8 +379,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn list_kind_defaults_to_indicators() {
-        assert_eq!(ListKind::default(), ListKind::Indicators);
-    }
 }

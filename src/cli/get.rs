@@ -222,14 +222,27 @@ async fn fetch(
         "yfinance" => Ok(Yahoo::new()
             .candles(symbol, interval, since, Some(until))
             .await?),
-        other => {
-            let known: Vec<&str> = KNOWN_PROVIDERS.iter().map(|(n, _)| *n).collect();
-            bail!(
-                "unknown provider {other:?}. Known providers: {}",
-                known.join(", ")
-            )
-        }
+        other => bail!(unknown_provider_error(other)),
     }
+}
+
+/// Fetch the provider's full ticker vocabulary. Used by `fugazi list tickers`.
+/// Providers that don't offer a canonical enumeration endpoint (Yahoo, most
+/// retail equity APIs) surface `SourceError::Unsupported` through here.
+pub(crate) async fn tickers_of(provider: &str) -> Result<Vec<String>> {
+    match provider {
+        "binance" => Ok(Binance::new().tickers().await?),
+        "yfinance" => Ok(Yahoo::new().tickers().await?),
+        other => bail!(unknown_provider_error(other)),
+    }
+}
+
+fn unknown_provider_error(other: &str) -> String {
+    let known: Vec<&str> = KNOWN_PROVIDERS.iter().map(|(n, _)| *n).collect();
+    format!(
+        "unknown provider {other:?}. Known providers: {}",
+        known.join(", ")
+    )
 }
 
 /// Write the row list to `path` as a `;`-delimited CSV. Header:
